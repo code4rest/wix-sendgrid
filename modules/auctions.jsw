@@ -1,0 +1,419 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import {getLeaderAgent, getMyFullMember} from 'backend/leaders';
+import {addOffer} from 'backend/offers.jsw'; 
+import {dynamicEmail} from 'backend/sendGrid';
+
+var options = {
+"suppressAuth": true,
+};
+
+export async function getAuctions () {
+let today = new Date();
+  return wixData.query("Auctions") 
+  .include("villa")
+  .ge("expirationDate", today)
+  .limit(999)
+  .find(options)
+    .then( async (results) => {
+    console.log(results, results.items.length);
+    if(results.items.length > 0) {
+      const auctions = await returnData(results);
+      console.log(auctions, 'auctions before final return');
+      return auctions;
+    } else {
+     return [] // handle case where no matching items found
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+  } );
+}
+
+export async function getSelectedAuctions (villaId, year) {
+let today = new Date();
+console.log(year, 'year backend and then typeof', typeof year);
+const firstOfEachYear = new Date(year, 0, 1);
+console.log(firstOfEachYear, 'firstOfEachYear date');
+  return wixData.query("Auctions") 
+  .include("villa")
+  .eq('villa', villaId)
+  .ge("expirationDate", today)
+  .ge("checkIn", firstOfEachYear)
+  .limit(999)
+  .find(options)
+  .then( async (results) => {
+    console.log(results, results.items.length);
+    if(results.items.length > 0) {
+      const auctions = await returnData(results);
+      console.log(auctions, 'auctions before final return');
+      return auctions;
+    } else {
+     return [] // handle case where no matching items found
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+  } );
+}
+
+export function getAllVillasAuctions (year) {
+  let today = new Date();
+console.log(year, 'year backend and then typeof', typeof year);
+const firstOfEachYear = new Date(year, 0, 1);
+console.log(firstOfEachYear, 'firstOfEachYear date');
+  return wixData.query("Auctions") 
+  .include("villa")
+  .ge("expirationDate", today)
+  .ge("checkIn", firstOfEachYear)
+  .limit(999)
+  .find(options)
+  .then( async (results) => {
+    console.log(results, results.items.length);
+    if(results.items.length > 0) {
+      const auctions = await returnData(results);
+      console.log(auctions, 'auctions before final return');
+      return auctions;
+    } else {
+     return [] // handle case where no matching items found
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+  } );
+}
+
+function returnData (results) {
+  console.log(results);
+  return results.items.map( (item) => {
+    const villa = item.villa.title;
+    const city = item.villa.municipio;
+    const pic = item.villa.mainPic;
+    return {
+    "_id": item._id,
+    "title": item.title,
+    "expirationDate": item.expirationDate,
+    "expirationHour": item.expirationHour,
+    "bookNowPrice": item.bookNowPrice, 
+    "checkin": item.checkIn,
+    "checkout": item.checkOut,
+    "bidCoins": item.bidCoins,
+    "villa": villa,
+    "city": city,
+    "pic": pic,
+    'higherBid': 0,
+    'processing': item.processingFee,
+    'nightsNumber': item.nightsNumber,
+    'guestNumber': item.guestNumber,
+    'balanceDate': item.balanceDate,
+    'upfront': item.upfront,
+    'upfrontPerc': item.upfrontPerc,
+    'balance': item.balance,
+    'minimum': item.minimum,
+    'scorePerc': item.villa.scorePerc,
+    'score': item.villa.score
+    };
+  } );
+}
+
+export async function calculateHigherBid (_id) {
+  console.log(_id, "auctionId to search for bids");
+  return wixData.query("auctionBids") 
+  .eq("auction", _id)
+  .limit(999)
+  .descending('bidPrice')
+  .find(options)
+  .then ( (results) => {
+    if (results.items.length > 0) {
+      console.log(results, 'bids');
+      const higherBid = results.items[0];
+      const higherBidEur = higherBid.bidPrice;
+      return higherBidEur;
+    } else {
+      return 0;
+    }
+  })
+}
+
+// here add the highest bid also in auction with member and agent's memeber who will be the coAgent in case the agent of the auction was different
+export async function createBid (auctionId, bid) {
+const user = wixUsersBackend.currentUser;
+const userId = user.id; 
+const myFullMember = await getMyFullMember ();
+const memberId = myFullMember.memberId;
+const agentId = myFullMember.agent;
+const bidNumber = Number(bid);
+console.log(auctionId, bid, memberId, agentId, 'auctionId, bid, memberId, agentId');
+// the leader's agent is possibly coAgent given that the auction will probably have a different agent
+wixData.get("Auctions", auctionId, options)
+  .then( (item) => {
+    item.member = memberId; // updated last name
+    item.highestBid = bid
+    item.coAgent = agentId;
+    wixData.update("Auctions", item);
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+  } );
+
+  let toInsert = {
+  "auction": auctionId,
+  "bidPrice": bid,
+  "member": memberId,
+  "coAgent": agentId
+}
+console.log(toInsert, 'toInsert');
+return wixData.insert("auctionBids", toInsert, options)
+  .then( (results) => {
+    console.log(results, 'item inserted');
+    let item = results; //see item below
+    // send email for offer received 
+    return 'Offer submitted';
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+    return errorMsg;
+  } );
+}
+
+export async function addOfferBookNow (auctionId) {
+  const offerObj = await getAuctionToBook(auctionId);
+  console.log(offerObj, 'offer Obj created returned to main function');
+  const offerCreated = await addOfferAuction(offerObj);
+  console.log(offerCreated, 'offerCreated');
+  return offerCreated;
+}
+
+async function getAuctionToBook (auctionId) {
+console.log(auctionId, 'auctionId to search for');
+let today = new Date();
+  return wixData.query("Auctions") 
+  .include("villa")
+  .include("agent")
+  .include("coAgent")
+  .include('member')
+  .eq('_id', auctionId)
+  .find(options)
+  .then( async (results) => {
+    console.log('results');
+    if(results.items.length > 0) {
+    let item = results.items[0];
+
+    let villa = item.villa;
+    let villaName = villa.title;
+    let cityName = villa.municipio;
+    let comissionPercentage = villa.comissionPercentage;
+    let cleaningFee = villa.cleningFee; //ALERT THERE IS NO ERROR CLENING WAS WRONG IN THE COLLECTION
+    let agentDoCleaning = villa.agentDoCleaning;
+    let extraBeds = villa.extraBeds;
+    let extraBedPrice = villa.extraBedPrice; 
+    let totGuests = villa.totGuests;
+    let extraBedtoAgent = villa.extraBedtoAgent;
+    let offerRef = Math.random().toString(36).substring(2, 15);
+    const agent = item.agent._id;
+    const member = item.member;  
+    let plusVatCommission = villa.plusVatCommission; // boolean if add vat
+      
+      item.title = 'OFFER_' + offerRef;
+      item.villa = villa;
+      item.plusVatCommission = plusVatCommission,
+      item.agent = agent;
+      item.city = cityName;
+      item.comissionPercentage = comissionPercentage;
+      item.extraBedsAvailable = extraBeds;
+      item.extraBedPrice = extraBedPrice;
+      item.villaMaxGuests = totGuests;
+      item.extraBedtoAgent = extraBedtoAgent; // bool
+      item.cleaningFee = cleaningFee;
+      item.agentDoCleaning = agentDoCleaning;
+      item.coAgentCommPerc = item.coAgent.coAgentCommPerc;
+      item.member = member._id;
+      item.memberEmail = member.title;
+      item.auctionCoverted = true;
+      
+      console.log(item, "offer as base to start to create the offer")
+      return item;
+        } else {
+          // handle case where no matching items found
+        }
+      } )
+      .catch( (err) => {
+        let errorMsg = err;
+      } );
+}
+
+import {getProcessing} from 'backend/offers.jsw'; 
+import {getSecret} from 'wix-secrets-backend';
+const optionsDate = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+
+export async function addOfferAuction (offer) {
+  console.log('running addOfferAuction in the back end form the offer', offer)
+  var vatPerc = await getSecret('vat');
+  vatPerc = Number(vatPerc);
+  
+  const plusVatCommission = offer.plusVatCommission;
+  let offerLength = offer.length;
+  //console.log(processingFee, "processing fee from secrets");
+  const myMember = offer.member;
+  const guestNumber = offer.guestNumber;
+  const nightsNumber = offer.nightsNumber;
+  const villa = offer.villa;
+    //console.log(offer, 'each offer to insert in the loop');
+    // about starting point 
+    var coAgentEur = 0;
+    var commissionBeds = 0;
+    var extraBedEur = 0;
+    // SECTION about offer general data
+    const upfrontPerc = Number(offer.upfrontPerc);
+    const price = Number(offer.bookNowPrice); // totalPrice already assigne
+    // SECTION about processsion fee
+    const processingFeePerc = Number(await getProcessing());
+    const priceLESSprocessing = Math.floor(price / (processingFeePerc + 100) * 100);
+    const processingFeeEur = Math.floor(price - priceLESSprocessing);
+    console.log(price, processingFeeEur, processingFeePerc, (processingFeePerc + 100), 'price, processingFee, processingFeeEur, processingFeePerc', '(processingFeePerc + 100)')
+    
+    console.log(processingFeePerc, 'processingFeePerc', processingFeeEur, 'processing fee in Eur');
+    // SECTION about upfront and balance
+    const floatingUpfront = price * upfrontPerc / 100;
+    const upFront = Math.floor(floatingUpfront); // the processing fee will be paid upfront 
+    const balance = Number(price - upFront);
+    const balanceDate = offer.balanceDate;
+    const balanceDateString = balanceDate.toLocaleDateString('en-GB', optionsDate); 
+    const bidCoins = offer.bidCoins;
+    const villaName = villa.title;
+
+    // SECTION about base commission
+    const commissionPerc = Number(offer.comissionPercentage);
+    var commissionRental = Math.floor(priceLESSprocessing * commissionPerc /100);
+
+    // SECTION about extra beds
+    const villaMaxCapacity = Number(villa.villaMaxGuests);
+    const extraBedsAvailable = Number(villa.extraBedsAvailable);
+    const defaultCapacity = Number(villaMaxCapacity - extraBedsAvailable);
+    //console.log(defaultCapacity, "default capacity which is max Capacity - extrabeds which folllow in order", villaMaxCapacity, extraBeds);
+    var extraBedsBooked = Number(guestNumber - defaultCapacity);//extra bedNum
+    //console.log(extraBedsBooked, ' extraBedsBooked which is  guestNumber minus defaultCapacity which follow', guestNumber, defaultCapacity);
+    if (extraBedsBooked > 0) {
+      var extraBedPrice = Number(offer.extraBedPrice);
+      extraBedEur = Number(extraBedsBooked * extraBedPrice * nightsNumber); // extra beds price
+    } else { 
+      extraBedsBooked = 0;
+      }
+    const priceNoExtraBeds = Number(price - extraBedEur); // net price
+      //console.log(priceNoExtraBeds, 'priceNoExtraBeds');
+    
+    //console.log(extraBedsBooked, extraBedPrice, extraBedEur, 'extraBedsBooked = extraBedPrice * extraBedEur'); 
+    const agentExtraBedsComm = offer.extraBedtoAgent; // bool if agent get commission on beds
+    if (agentExtraBedsComm === true) { // if we get extra beds comm then add it
+      commissionBeds = Math.floor(extraBedEur * commissionPerc / 100); 
+      var extraBedsOwner = extraBedEur - commissionBeds;
+      var totalCommission = commissionRental + commissionBeds; //if comm on bed then add bedCommission on booking but no processing fee
+    } else {
+      extraBedsOwner = Number(extraBedEur);
+      totalCommission = commissionRental;
+      }
+    // about agent
+    var cleaningFee = Number(offer.cleaningFee); 
+    const agentDoCleaning = offer.agentDoCleaning;
+    if (agentDoCleaning !== true) {
+      cleaningFee = 0;
+    }  
+    // SECTION about coAgent and agent IF coAgent
+    const coAgent = offer.coAgent._id;
+    const coAgentCommPerc = Number(offer.coAgentCommPerc); // set commission agent for each agent, take it from agent and apply
+    var ratioAgentCoAgent = 0;
+    if ((coAgent !== undefined && coAgent !== null) && coAgent !== offer.agent) { // if we have a co agent and it's not us
+      // ALERT GET THIS PART WHICH IS TRICKY **********************************************************
+      var commissionSplit = true
+      ratioAgentCoAgent = Number(coAgentCommPerc / commissionPerc)
+      coAgentEur = Math.floor(totalCommission * ratioAgentCoAgent);
+      totalCommission = Math.floor(totalCommission - coAgentEur); // we got coAgent so let's deduct his fucking commission
+      console.log(ratioAgentCoAgent, totalCommission, coAgentEur, 'ratioAgentCoAgent, totalCommission, coAgentEur')
+    }
+    // about final amount to agent
+    let totalAgent = Number(totalCommission + processingFeeEur + cleaningFee + bidCoins);
+    if (vatPerc > 0 && plusVatCommission === true) { // add vat if to be added
+      totalAgent = totalAgent * (100 + vatPerc) / 100; 
+      offer.vatOncommission = vatPerc;
+    } else { offer.vatOncommission = 0; }
+    console.log(totalAgent, ' totalAgent which is  = to the sum of ', commissionBeds + totalCommission + processingFeeEur + cleaningFee + bidCoins, 'commissionBeds + totalCommission + processingFeeEur + cleaningFee + bidCoins' );
+    //about ownerTotPrice
+    const ownerTotPrice = Number(price - totalAgent - coAgentEur);
+    const ownerPrice =  Number(ownerTotPrice - extraBedsOwner);
+    const priceLesProcessing = Math.floor(price - processingFeeEur);
+    //console.log(extraBedsOwner, processingFeePerc, processingFeeEur, coAgentCommPerc, totalCommission, 'extraBedsOwner, processingFeePerc, processingFeeEur, coAgentCommPerc, totalCommission');
+    //console.log(ownerPrice, ownerTotPrice, totalAgent, 'ownerPrice, ownerTotPrice, totalAgent');
+    //console.log(offer, 'offer before setting backend data');
+    //const newId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    const today = new Date();
+    const todayMS = today.getTime();
+    const newId = Math.random().toString(36).substring(2, 15) + todayMS.toString();
+    offer._id = newId;
+    offer.city = villa.city;
+    offer.villa = villa._id;
+    offer.coAgent = coAgent;
+    offer.totalPriceIclProcesssing = price; //ALERT WE HAVE EN ERROR IN THE FILED NAME. KEEP THE TRIPLE S
+    offer.price = priceLESSprocessing;
+    offer.priceNoExtraBeds = priceNoExtraBeds;
+    offer.processingFee = processingFeeEur; 
+    offer.upFront = upFront;
+    offer.balance = balance;
+    offer.commission = commissionRental;
+    offer.commissionSplit = commissionSplit;
+    offer.coAgentAmount = coAgentEur;
+    offer.totalAgent = totalAgent;
+    offer.extraBedNo = extraBedsBooked;
+    offer.extraBedEur = extraBedEur;
+    offer.extraBedsComm = commissionBeds;
+    offer.extraBedsOwner  = extraBedsOwner;
+    offer.ownerPrice = ownerPrice;
+    offer.totalPriceOwner = ownerTotPrice;
+    const offerSubmitted = await wixData.insert("Offers", offer, options);
+    if (offerSubmitted._id) {
+      console.log(offerSubmitted._id, 'bid submitted so lets go to booking');
+      var offerId = offerSubmitted._id;
+    } else {
+      offerId = null;
+    }
+    return offerId;
+    
+}
+
+
+
+
+
+
+async function sendEmailAuction (customerName, customerEmail, villaName, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, upFront, balance, balanceDateString) {
+let dynamicJson = {
+  "name":customerName,
+  "villaName": villaName,
+  "customerEmail": customerEmail,
+  "checkin": checkIn,
+  "checkout": checkOut,
+  "price": totalPriceIclProcesssing,
+  "nights": nightsNumber,
+  "guests": guestNumber,
+  "upfront": upFront,
+  'balance': balance,
+  'balanceDateString': balanceDateString
+  }
+  console.log(customerEmail, dynamicJson, 'email, dynamicJson');
+  dynamicEmail('info@sakamoto.com', customerEmail, "Great offer for a villa!", "Offer submission", true, 'submitOffer', dynamicJson); // this send the email from sendGrid          
+      //        fromEmail,          toEmail,         subjectString,          sendingFunction,   booleanIfToAdmin,templateId,  JSON    
+}
+
+/*
+//dynamicEmail(fromEmail, toEmail, subjectString, sendingFunction, booleanIfToAdmin, secretName, dynamicJSON)
+.then ( () => {
+    console.log("RUNNING THE FUNCION FOR SENDGRIND SEND OFFER");
+    let inDate = offer.checkIn.toLocaleDateString(undefined, optionsDate);
+    let outDate = offer.checkOut.toLocaleDateString(undefined, optionsDate);
+    console.log('to trigger email', villaName, offer.checkIn, offer.checkOut, price, 'offer.villaName, offer.checkIn, offer.checkOut, totalPriceIclProcesssing,');
+    console.log(nightsNumber, guestNumber, upFront, balance, balanceDateString, 'nightsNumber, guestNumber, upFront, balance, balanceDateString');
+    sendEmailAuction(myMember.name, myMember.title, villaName, inDate, outDate, price, nightsNumber, guestNumber, upFront, balance, balanceDateString);
+    })
+    */

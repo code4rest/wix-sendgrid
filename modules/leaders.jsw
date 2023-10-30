@@ -1,0 +1,1482 @@
+import wixUsersBackend from 'wix-users-backend';
+import wixData from 'wix-data';
+import { dynamicEmail } from 'backend/sendGrid';
+
+var options = {
+    "suppressAuth": true,
+    //"suppressHooks": true,
+};
+
+export function villaCal(year) {
+    //console.log('running search backend with', villaId, year);
+    //console.log(cal, 'calendar');
+    return wixData.query('Calendars')
+    .eq('title', year.toString())
+    .find(options)
+    .then((results) => {
+        const selectedCal = results.items[0].calendarArray;
+        console.log(selectedCal, 'bookings for this villa and year');
+        return selectedCal;
+    });
+}
+
+export function baseCal(year) {
+    // console.log('running search backend with', typeof year, year);
+    //console.log(cal, 'calendar');
+    return wixData.query('Calendars')
+    .eq('title', year.toString())
+    .find(options)
+    .then((results) => {
+        // console.log(results, "results or calendar search");
+        if (results.length === 1) {
+            //let field = 'year' + year;
+            const calendarObj = results.items[0];
+            const selectedCal = calendarObj.calendarArray;
+            // console.log(selectedCal, 'calendars for this villa and year');
+            return selectedCal;
+        } else return [];
+    });
+}
+
+//search payment
+export function leaderContractPayment(contractId) {
+    return wixData.query("Payments")
+    .include("contract")
+    .eq("contract", contractId)
+    .find()
+}
+
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+// search offer for id
+export async function offerCompare(villa1, villa2, villa3) {
+    console.log(villa1, villa2, villa3, "the ids of offer passed to query"); 
+    let query1 = wixData.query("Offers")
+        .include("villa")
+        .eq("_id", villa1);
+    let query2 = wixData.query("Offers")
+        .include("villa")
+        .eq("_id", villa2);
+    let query3 = wixData.query("Offers")
+        .include("villa")
+        .eq("_id", villa3); 
+    return query1.or(query2).or(query3) // use or because and would pass only items that match all of the 3 queries
+    .find(options)
+    .then((results) => {
+        let items = results.items;
+        console.log(items, typeof items, 'items, typeof items')
+        return items.map( (eachOffer) => {
+            return {
+                _id: eachOffer._id,
+                mainPic: eachOffer.villa.mainPic,
+                villaName : eachOffer.villa.title,
+                scorePerc : eachOffer.villa.scorePerc,
+                checkIn : eachOffer.checkIn,
+                checkOut : eachOffer.checkOut,
+                bedrooms : eachOffer.villa.bedrooms.toString(),
+                people : eachOffer.villa.people.toString(),
+                bathroom : eachOffer.villa.bathrooms.toString(),
+                extraBeds : eachOffer.villa.extraBeds.toString(),
+                extraBedPrice : eachOffer.villa.extraBedPrice.toString(),
+                //description : eachOffer.villa.description,
+                score : eachOffer.villa.aboutScoreText,
+                location : eachOffer.villa.locationText,
+                great : eachOffer.villa.makesGreat,
+                priceOffer : eachOffer.totalPriceIclProcesssing.toString(),
+                basicCheckbox : eachOffer.villa.tagsBasic,
+                basicText : eachOffer.villa.basicText,
+                amenitiesCheckbox : eachOffer.villa.tagsAmenities,
+                amenitiesText: eachOffer.villa.amenitiesText,
+                featureCheckbox : eachOffer.villa.tagsFeatures,
+                featuresText: eachOffer.villa.featuresText,
+                surroundingCheckbox : eachOffer.villa.tagsSurrounding,
+                surroundingText : eachOffer.villa.surroundingText,
+                luxyScore : eachOffer.villa.scorePerc.toString(),
+                damageDeposit: eachOffer.villa.damageDeposit,
+                checkinTime: eachOffer.villa.checkinTime,
+                checkoutTime: eachOffer.villa.checkoutTimeTo,
+                expiration: eachOffer.expirationDate.toLocaleDateString('en-GB', optionsDate),
+                mapArray:  {
+                    "_id": eachOffer.villa._id,
+                    "name": eachOffer.villa.title,
+                    "pic": eachOffer.villa.mainPic,
+                    'guestsNum': eachOffer.villa.totGuests,
+                    'bathrooms': eachOffer.villa.bathrooms,
+                    'bedrooms': eachOffer.villa.bedrooms,
+                    // 'latitude': eachOffer.villa.latitude,
+                    // 'longitude': eachOffer.villa.longitude,
+                    "address": eachOffer.villa.address,
+                    'price': eachOffer.totalPriceIclProcesssing
+                },
+                locationObj: eachOffer.villa.locationObj
+            }
+        })
+    })
+}
+/*
+ix code SDK Warning: The text parameter of "branding" that is passed to the text method cannot be set to null or undefined.
+Wix code SDK Warning: The text parameter of "story" that is passed to the text method cannot be set to null or undefined.
+Wix code SDK Warning: The text parameter of "design" that is passed to the text method cannot be set to null or undefined.  
+*/
+export async function queryEmail(email) {
+    let bool = await searchMyMember(email);
+    return bool;
+}
+
+function searchMyMember(email) {
+    return wixData.query("MyMembers")
+        .eq("title", email)
+        .find(options)
+        .then((results) => {
+            if (results.items.length > 0) {
+                return true
+            } else {
+                return false
+            }
+        })
+        .catch((err) => {
+            let errorMsg = err;
+        });
+}
+
+function getUserEmail() {
+    let user = wixUsersBackend.currentUser;
+    // let userId = user.id;
+    return user.getEmail()
+        .then((email) => {
+            let userEmail = email;
+            return userEmail;
+    });
+}
+
+function getUserId() {
+    let user = wixUsersBackend.currentUser;
+    let userId = user.id;
+    return userId;
+}
+
+function leaderId(email) {
+    //console.log("running leaderEmail search");
+    return wixData.query("MyMembers")
+        .eq("title", email)
+        .find(options)
+        .then((results) => {
+            console.log(results, "results from leaderEmail search in backend");
+            if (results.length === 1) {
+                let {squad=[], _id, agent, firstName, lastName, title, secondaryEmail, pic, mainPhone, squadName=null} = results.items[0];
+                const fullMember = {
+                    memberId: _id,  //that is exactly the previuos order when it was an array so memberId was [0] and so on so forth
+                    agent: agent, 
+                    name: firstName, 
+                    surname: lastName, 
+                    email: title, 
+                    secondaryEmail: secondaryEmail, 
+                    pic: pic, 
+                    phone: mainPhone, 
+                    squad: squad, 
+                    squadName: squadName,
+                }
+                //console.log(fullMember, 'fullMember')
+                return fullMember;
+            }
+        })
+        .catch( err => err);
+}
+
+export async function getMyMember() {
+    //console.log('running mymember');
+    let user = wixUsersBackend.currentUser;
+    if(user.loggedIn) {
+        let userEmail = await user.getEmail()
+        //console.log(userEmail, 'userEmail');
+        var fullMember = await leaderId(userEmail);
+        var myMember = fullMember.memberId;
+        console.log("myMember", myMember)
+        return myMember; // return memberId
+    }
+    else {return 'notLoggedIn'}
+}
+
+export async function getMyFullMember() {
+    //console.log('running mymember');
+    let user = wixUsersBackend.currentUser;
+    if(user.loggedIn) {
+        let userEmail = await user.getEmail()
+        //  console.log(userEmail, 'userEmail');
+        var fullMember = await leaderId(userEmail);
+        //console.log("myFullMember", fullMember)
+        return fullMember; // search for this member email in MyMembers
+    }
+    else {return {memberId: null} }
+}
+
+
+
+export function leaderAgent(email) {
+    //console.log("running memeber search");
+    return wixData.query("MyMembers")
+        .eq("title", email)
+        .find(options)
+        .then((results) => {
+            //console.log(results, "results from leaderEmail search in backend");
+            if (results.length === 1) {
+                const user = results.items;
+                var agentId = user[0].agent_id;
+                //console.log(agentId, 'agent id we found, null if this member has no agent yet so we pass hedo')
+                if (!agentId) {
+                    agentId = "de8ab612-3f47-4ef5-b739-eb4dd9d8a937";
+                }
+            }
+            return agentId;
+        });
+}
+
+export async function getAgentName() {
+    let agent = await getLeaderAgent();
+    return agent;
+}
+
+// to get the agent name
+async function getLeaderAgent() {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    return wixData.query("MyMembers")
+        .eq("title", userEmail)
+        .find(options)
+        .then((results) => {
+            //console.log(results.length, "results from leaderEmail search in backend");
+            if (results.length === 1) {
+                let userFound = results.items;
+                var agent = userFound[0].agent.title;
+            }
+            return agent;
+        });
+}
+
+export async function agentOfLeader() {
+    const fullMember = await getMyFullMember();
+    let agent = fullMember.agent;
+    return wixData.query('Agents')
+        .eq('_id', agent)
+        .find(options)
+        .then((res) => {
+            agent = res.items[0];
+            const agentFullName = agent.title;
+            return agentFullName;
+        })
+}
+
+export async function start() {
+    let bookings = await searchBookingLeader();
+    return bookings;
+}
+
+export async function searchBookingLeader() {
+    //console.log("invoked start backend");
+    let user = await wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    //console.log(userEmail, "userEmail");
+    let myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    //console.log(myMember, memberId, "myMember and memberId");
+    const lastMonth = new Date (+new Date()-2.419e+9)
+    let results = await wixData.query("Contracts")
+        .eq("member", memberId)
+        .ne('deleted', true)
+        .ge('checkIn', lastMonth)
+        //.include("city")
+        .include('villa')
+        .find(options);
+    if (results.length > 0) {
+        return results.items.map((item) => {
+            console.log(item, "for each item all booking leader");
+            let {policy='fixed', deleted=false} = item;
+            let price = item.price + item.extraBedEur + item.extraCheckinEur + item.processingFee;
+            return {
+                "_id": item._id,
+                "checkin": item.checkIn,
+                "checkout": item.checkOut,
+                "reference": item.title,
+                "villa": item.villa.title,
+                'villaId': item.villa._id,
+                "pic": item.villa.mainPic,
+                //"city": item.city.title, // get from city or below from villa
+                "city": item.villa.municipio,
+                //"inDate": item.checkIn,
+                //"leaderId": myMember,
+                "price": price,
+                "bedrooms": item.villa.bedrooms,
+                "bathrooms": item.villa.bathrooms,
+                "scorePerc": item.villa.scorePerc,
+                'latitude': item.villa.latitude,
+                'longitude': item.villa.longitude,
+                'nightsNumber': item.nightsNumber,
+                'balanceDate':  item.balanceDate,
+                'guestNumber': item.guestNumber,
+                '_createdDate': item._createdDate,
+                'policy': policy,
+                'deleted': deleted,
+            };
+        });
+    } else {
+        return [];
+    }
+}
+
+
+// all the booking for customer... decide if search by email or _id
+export async function oneBooking(bookingId) {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    const {name, surname, phone, email, memberId} = await leaderId(userEmail); // myMember
+    let booking = await wixData.query("Contracts")
+        .eq("member", memberId)
+        .eq('_id', bookingId)
+        .include('villa')
+        .include('owner')
+        .include('agent')
+        .find(options);
+    return booking.items.map((item) => {
+        console.log(item, "this booking leader");
+        var cashBalance = item.cashBalance;
+        if (cashBalance === null || cashBalance === undefined) {
+            cashBalance = false
+        }
+        console.log(item);
+        if (item.welcomePack) {
+            var welcomePack = item.welcomePack;
+        } else {
+            welcomePack = [];
+        }
+        let {priceNoExtraBeds, processingFee=0, extraBedEur=0, extraCheckinStaff=0, extraCheckinEur=0, clientNote='', deleted=false, specialTerms='None', secondPay=0, secondPayDate} = item;
+        return {
+            'id': item._id,
+            // 'googleMap': item.villa.googleMapLink,
+            'address': item.villa.address,
+            'locationText': item.villa.locationText,
+            'memberName': name,
+            'memberLastname': surname,
+            'memberPhone': phone,
+            'memberEmail': email,
+            'cashBalance': cashBalance, // bool
+            "reference": item.title,
+            "villa": item.villa.title,
+            "pic": item.villa.mainPic, //
+            "city": item.villa.municipio,
+
+            "price": priceNoExtraBeds + processingFee, // includes processing but not beds; rental including processing
+            'extraCheckinEur': extraCheckinEur,
+            'extraCheckinStaff': extraCheckinStaff,
+            'extraBedNo': item.extraBedNo,
+            'extraBedEur': extraBedEur,
+
+            "balanceDate": item.balanceDate,
+            "villaId": item.villa._id,
+            "checkIn": item.checkIn,
+            "checkOut": item.checkOut,
+            "nightsNumber": item.nightsNumber,
+            "guestNumber": item.guestNumber,
+            "ownerFullName": item.owner.title,
+            "ownerEmail": item.owner.wixUserEmail,
+            "ownerPhone": item.owner.phone,
+            "agentName": item.agent.title,
+            "agentEmail": item.agent.email,
+            "agentPhone": item.agent.phone,
+            "bidCoins": item.bidCoins,
+            'damageAmount': item.villa.damageDeposit,
+            'welcome': welcomePack,
+            'clientNote': clientNote,
+            'deleted': deleted,
+            'specialTerms': specialTerms,
+            'secondPay': secondPay,
+            'secondPayDate': secondPayDate
+            //'priceNoExtraBeds': item.priceNoExtraBeds, 
+            //'processingFee': item.processingFee,
+        };
+    });
+}
+
+import {calcBookingData} from 'backend/contractCalculation.jsw'
+
+// all the booking for customer... decide if search by email or _id
+export async function oneBookingBalance(bookingId) {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    const {name, surname, phone, email, memberId} = await leaderId(userEmail); // myMember
+    let booking = await fetchBooking(memberId, bookingId);
+    let data = await calcBookingData(booking);
+    return data;
+}
+
+function fetchBooking (memberId, bookingId) {
+    return wixData.query("Contracts")
+    .eq("member", memberId)
+    .eq('_id', bookingId)
+    .include('owner')
+    .include('agent')
+    .include('villa')
+    .find(options)
+    .then( contract => {
+        return contract.items;
+    })
+}
+
+export async function countAll () {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    let finalData = await countAllSecondStep(userEmail);
+    return finalData;
+}
+
+import {checkOneContractIfOverdue} from 'backend/overduePayments';
+
+export async function countAllSecondStep (email) {
+    var myMember = await leaderId(email);
+    if (myMember.squadName) {
+        var {squadName= 'Add your mates'} = myMember;
+    } else {
+        squadName= 'Add your mates';
+    }
+    let {squad=0, memberId} = myMember;
+    //console.log(squad, 'squad and then squad.length', squad.length);
+    let inquiries = new Promise( (resolve, reject) => {
+        resolve(countInquiry(memberId));
+    });
+    let transferObj= new Promise( (resolve, reject) => {
+        resolve(countTransfers(memberId));
+    });
+    let offerNum = new Promise( (resolve, reject) => {
+        resolve(countOffers(memberId));
+    });
+    let experiencesNum = new Promise( (resolve, reject) => {
+        resolve(countService(memberId));
+    });
+    let bookingCoins = new Promise( (resolve, reject) => {
+        resolve(countBookingCoins(memberId));
+    });
+    let planNum = new Promise( (resolve, reject) => {
+        resolve(countPlan(memberId));
+    });
+    
+    return Promise.all([bookingCoins, transferObj, offerNum, experiencesNum, planNum, inquiries])
+    .then( ( (results) => {
+        return {
+            bookingResume: results[0],
+            bookingNum: results[0].bookingNum,
+            totalHedollarsLeft: results[0].totalHedollarsLeft,
+            transferObj: results[1],
+            offerNum: results[2],
+            squadNum: squad.length,
+            squadName: squadName,
+            experiencesNum: results[3],
+            planNum: results[4].length,
+            planArray: results[4],
+            inquiriesNum: results[5]
+        }
+    }))
+}
+
+
+export function countTransfers (memberId) {
+    return getTransfers(memberId).then( results => {
+        let transfers = results.items;
+        if(transfers.length > 0) {
+            return mapTransfer(transfers).then( mapped => {
+                console.log(mapped, 'mapped')
+                return {
+                    transfersNum: results.totalCount,
+                    transfersArray: mapped
+                }
+            })  
+        }
+        else { 
+            return {
+                transfersNum: 0,
+                transfersArray: []
+            }
+        }
+    })
+    .catch(err=> 'error');
+}
+
+function getTransfers (memberId) {
+    return wixData.query("transferBookedIntent")
+    .eq("memberId", memberId)
+    .eq('isBooked', true)
+    .ge('date', new Date())
+    .include('provider')
+    .find(options);
+}
+
+async function mapTransfer (array) {
+    const mapped = await array.map( transfer => {
+        let {bookingId, _id, selectedWay, priceToCharge, amountPaid=0, passengers, date, dateBack='notSelected', airport, provider, villaName} = transfer;
+        return {
+            _id: _id,
+            bookingId: bookingId,
+            selectedWay: selectedWay,
+            priceToCharge: priceToCharge,
+            amountPaid: amountPaid,
+            passengers:passengers,
+            date: date,
+            dateBack: dateBack,
+            airport: airport,
+            villaName: villaName,
+            providerName: provider.title,
+            providerEmail: provider.email,
+            providerPhone: provider.phone
+        }
+    });
+    console.log(mapped, 'mapped to return')
+    return mapped;
+}
+
+
+function countCheckin (bookingId) {
+    return wixData.query("CheckInOut")
+        .eq("booking", bookingId)
+        .find(options)
+        .then( (results) => {
+            if (results.items.length > 0) {
+                return results.items.length;
+            } else {
+                return 0;
+            }   
+        })
+}
+
+function countService (memberId) {
+    return wixData.query("Orders")
+        .eq("member", memberId)
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+async function countPlan (memberId) {
+    let plans = await wixData.query("Plan")
+        .eq("member", memberId)
+        .find(options)
+        return  plans.items.map( (plan) => {
+        //console.log('map iterating', plan);
+        return {
+            id: plan._id,
+            reference: plan.title,
+        }
+        })
+}
+
+export function countBookingCoins (memberId) {
+    // let today = new Date();
+    // let lastWeek = today.getTime() - 6.048e+8;
+    return wixData.query("Contracts")
+        .eq("member", memberId)
+        .ne('deleted', true)
+        .ge('checkIn', new Date()) // let us see the booking for 1 week after check-out
+        .include('villa')
+        .ascending('checkIn')
+        .find(options)
+        .then( (results) => {
+            if (results.items.length > 0) { // we got booking
+                var data = {
+                    bookingNum: results.length,
+                    bookingArray: [], // each booking pushed in
+                    totalHedollarsLeft: 0,
+                }
+                let findHedollars = new Promise( (resolve, reject) => {
+                let counter = 0;    
+                let totalCountHedollars = 0;
+                let totalCountHedollarsSpent =0;
+                results.items.forEach( async (booking) => { // now let's find data for each booking
+                    let {welcomePack=[]} = booking;
+                    // var hedollars = 0;
+                    // var dollarsSpent = 0;
+                    // var plan = 0;
+                    //console.log(booking.bidCoins, booking.welcome, 'booking.bidCoins, booking.welcome')
+                    let overdueObj = await checkOneContractIfOverdue(booking._id); // search if overdue at the moment
+                    console.log(overdueObj, 'overdueObj in countAll process')
+                    let oneBookingData = {
+                        _id: booking._id,
+                        reference: booking.title,
+                        villa: booking.villa.title,
+                        checkin: booking.checkIn,
+                        totalHedollars: 0,
+                        hedollarsSpent: 0,
+                        hedollarsLeft: 0,
+                        overdueObj: overdueObj,
+                    }
+                    //if we got bidCoins for this booking START
+                    if (booking.bidCoins > 0) { 
+                        totalCountHedollars = totalCountHedollars + booking.bidCoins;
+                        var hedollarsOneBooking = booking.bidCoins; // amount for each booking
+                    } else {hedollarsOneBooking = 0 }
+                    oneBookingData.totalHedollars = hedollarsOneBooking;
+                    oneBookingData.hedollarsLeft = hedollarsOneBooking;
+                    //if we got bidCoins for this booking END, below search for spending
+                    //console.log('we got welcome', booking.welcome.plan.length, 'booking.welcome.plan.length');
+                    console.log(oneBookingData, 'oneBookingData line 557'); 
+                    if (welcomePack.length > 0) { // if this plan as something even if the villa will be tehere for sure so we have length
+                        oneBookingData.welcomePack = 'Booked';
+                        let spentEach = await calcSpent(welcomePack); // let's send only the array of details
+                        if (spentEach > 0) {
+                            oneBookingData.hedollarsSpent = spentEach;
+                            oneBookingData.hedollarsLeft = booking.bidCoins - spentEach; // let's add it to the resume of booking
+                            totalCountHedollarsSpent = totalCountHedollarsSpent + spentEach;
+                        }
+                    } 
+                    else {
+                        oneBookingData.welcomePack = 'Pending';
+                        oneBookingData.hedollarsSpent = 0;
+                        oneBookingData.hedollarsLeft = booking.bidCoins; // let's add it to the resume of booking
+                    }
+                    oneBookingData.welcomePackArray = welcomePack;
+                    console.log(oneBookingData, 'oneBookingData line 572');
+                    oneBookingData.checkinBooked = await countCheckin(booking._id); // let's add if checkin done
+                    // END OF ALL COMPUTATION SO PUSH THE ONEBOOKING ITEM
+                    data.bookingArray.push(oneBookingData);
+                    counter++;
+                    if (counter === results.items.length) {
+                        data.totalHedollarsLeft = totalCountHedollars - totalCountHedollarsSpent;
+                        //console.log(data, totalCountHedollars - totalCountHedollarsSpent, totalCountHedollars, totalCountHedollarsSpent, 'data, totalCountHedollars - totalCountHedollarsSpent, totalCountHedollars, totalCountHedollarsSpent');
+                        resolve(data); // resolve the remainder to be spent yet
+                    }
+                })
+            });
+            return findHedollars.then( (dataResponse) => {
+                //console.log(coins, 'coins to be spent yet solved in promise');
+                return dataResponse;
+            })
+            } else { // no booking this member
+                return {
+                    bookingNum: 0,
+                    bookingArray: [],
+                    totalHedollarsLeft: 0,
+                }
+            }
+            
+        })
+}
+
+/*
+#$%%$%%%$%^^^. VERY IMPORTANT NOT DELETE. IT CAN CALCULATE THE TOTAL OF HEDODOLLARS FOR DIFFERENT BOOKING SND THE TOTAL S[ENT ... IT MIGHT BE USEFUL
+function countBookingCoins (memberId) {
+    return wixData.query("Contracts")
+        .eq("member", memberId)
+        .find(options)
+        .then( (results) => {
+            if (results.items.length > 0) {
+                let findHedollars = new Promise( (resolve, reject) => {
+                    let counter = 0;
+                    var hedollars = 0;
+                    var dollarsSpent = 0;
+                    var plan = 0;
+                    results.items.forEach( async (booking) => {
+                        //console.log(booking.bidCoins, booking.welcome, 'booking.bidCoins, booking.welcome')
+                        if (booking.bidCoins > 0) {
+                            hedollars = hedollars + booking.bidCoins; // amount for each booking
+                        }
+                        if (booking.welcome) {
+                            //console.log('we got welcome', booking.welcome.plan.length, 'booking.welcome.plan.length');
+                            if (booking.welcome.plan.length > 0) { // if this plan as something even if the villa will be tehere for sure so we have length
+                                let spentEach = await calcSpent(booking.welcome.plan); // let's send only the array of details
+                                dollarsSpent = dollarsSpent + spentEach; // spent in each welcome
+                            } 
+                        }
+                        //console.log(counter, hedollars, dollarsSpent, 'counter, hedollars, dollarsSpent in loop');
+                        counter++;
+                        if (counter === results.items.length) {
+                            //console.log(hedollars, dollarsSpent, 'end of loop with partials of spent and spendable');
+                            resolve(hedollars - dollarsSpent); // resolve the remainder to be spent yet
+                        }
+                    })
+                });
+                return findHedollars.then( (coins) => {
+                    //console.log(coins, 'coins to be spent yet solved in promise');
+                    return {
+                    bookingNum: results.items.length,
+                    hedollarsLeft: coins,
+                }
+                })
+            } else {
+                return {
+                    bookingNum: 0,
+                    hedollars: 0,
+                }
+            }
+            
+        })
+}
+*/
+
+function calcSpent(welcome) {
+    console.log(welcome, 'array of welcome items passed to calcSpent function for looping');
+    let dollarsSpent = new Promise( (resolve, reject) => {
+        let counter = 0;
+        var spent = 0;
+        welcome.forEach( (item) => {
+            spent = spent + item.totalDollars;
+            counter++;
+            if (counter === welcome.length) {
+                resolve(spent);
+            }
+        })
+    });
+    return dollarsSpent.then( (spent) => {
+        return spent;
+    })
+}
+
+// function calcSpent(welcome) {
+//  console.log(welcome, 'array of welcome items passed to calcSpent function for looping');
+//  let dollarsSpent = new Promise( (resolve, reject) => {
+//      let counter = 0;
+//      var spent = 0;
+//      welcome.forEach( (item) => {
+//          if (item.type === 'service') {
+//              spent = spent + item.price; // totalDollars
+//          }
+//          counter++;
+//          if (counter === welcome.length) {
+//              resolve(spent);
+//          }
+//      })
+//  });
+//  return dollarsSpent.then( (spent) => {
+//      return spent;
+//  })
+// }
+
+function countInquiry (memberId) {
+    return wixData.query("Inquiries")
+        .eq("myMember", memberId)
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+function countOffers (memberId) {
+    return wixData.query("Offers")
+        .eq("member", memberId)
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+function countPlans (memberId) {
+    return wixData.query("Offers")
+        .eq("member", memberId)
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+export async function countOnlyBooking () {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    var myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    return wixData.query("Contracts")
+        .eq("member", memberId)
+        .gt("checkIn", new Date())
+        .find(options)
+        .then( (results) => {
+            console.log('bookings found', results.items)
+            return results.items.length;
+        })  
+}
+
+
+export async function countOnlyOffers () {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    var myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    return wixData.query("Offers")
+        .eq("member", memberId)
+        .gt("checkIn", new Date())
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+export async function countOnlyInquiry () {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    var myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    return wixData.query("Inquiries")
+        .eq("myMember", memberId)
+        .gt("fromDate", new Date())
+        .find(options)
+        .then( (results) => {
+            return results.items.length;
+        })
+}
+
+export async function updateMember(phone) {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    let myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    return wixData.get("MyMembers", memberId, options)
+    .then((item) => {
+        item.mainPhone = phone;
+        wixData.update("MyMembers", item, options);
+        return 'Updated'
+    })
+    .catch((err) => {
+        let errorMsg = err;
+    });
+}
+
+export async function updateMemberPic(url) {
+    let user = wixUsersBackend.currentUser;
+    let userEmail = await user.getEmail();
+    let myMember = await leaderId(userEmail);
+    let memberId = myMember.memberId;
+    return wixData.get("MyMembers", memberId, options)
+        .then((item) => {
+            item.pic = url;
+            wixData.update("MyMembers", item, options);
+            return 'Updated'
+        })
+        .catch((err) => {
+            let errorMsg = err;
+        });
+}
+
+export function friendsOffers (leadId) {
+    return offersOneLeadFriends(leadId).then(offers => {return offers});
+}
+
+/*
+import {fullResponseObj} from 'backend/http-functions'
+export function testHttp (request){
+    return fullResponseObj(request).then (result => {return result})
+}
+*/
+
+async function offersOneLeadFriends (lead) {
+    return wixData.query("Offers")
+        .eq('inquiry', lead)
+        .include('villa')
+        // .ne("rejected", true) //do not show the offers already rejected
+        .find(options)
+        .then( async results => {
+            if (results.totalCount > 0) {
+                let mappedOffers = await  mapOffers(results, {leaderId:null})
+                console.log(mappedOffers, 'mappedOffers')
+                return mappedOffers;
+            } 
+            else {
+                let offersArray = [];
+                return offersArray;
+            }
+        });
+}
+
+export async function leaderRequests() {
+    let myMember = await getMyMember();
+    //console.log(myMember, 'myMember search for leads for this leader');
+    if (myMember) {
+        let inquiries = await searchInquiries(myMember)
+        console.log(inquiries.length, 'inquiries.length');
+        if (inquiries.length > 0 && inquiries !== undefined) {
+            //console.log(myMember, inquiries, "inquires found this leader");
+            return inquiries;
+        } else {
+            //console.log(myMember, inquiries, "no inquiries for this leader");
+            inquiries = [];
+        }
+        //console.log(inquiries, 'inquiries for this leader before returning');
+        return inquiries
+    }
+    else {return ['not a member'];}
+}
+
+async function searchInquiries(myMember) {
+    //console.log(myMember, "myMember to search inquiries")
+    let requests = await wixData.query("Inquiries")
+        .include("city")
+        .include('kindOfParty')
+        .eq("myMember", myMember)
+        .find(options)
+    return requests.items.map((item) => {
+        //console.log(item, "item in loop request");
+        let partyName = item.kindOfParty?.title;
+        if(!partyName) {partyName = "NA"}
+        let {currency='EUR'} = item;
+        let {title} = partyName;
+        let {city='Marbella'} = item.city.title
+        return {
+            "_id": item._id,
+            "budget": item.budget,
+            "fromDate": item.fromDate,
+            "to": item.to,
+            //"leaderId": myMember,
+            "guests": item.guests,
+            "nights": item.nightsNumber,
+            "city": city,
+            "party": title,
+            "currency": currency,
+            //"label": city + ' - ' + item.fromDate.toLocaleDateString('undefined', optionsDate),
+            "value": item._id
+        };
+    });
+}
+
+export async function leaderOffers() {
+    let offers = await searchOffers();
+    console.log(offers, 'offers backend');
+    return offers;
+}
+
+// export async function offersOneLeadtest (lead) {
+//  // console.log(myMember, "myMember to search offers")
+//  const offers = await wixData.query("Offers")
+//      .eq('inquiry', lead)
+//      .include('villa')
+//      .find(options)
+//      if (offers.items.length > 0) {
+//          let mappedOffers = await mapOffers(offers, "myMember");
+//          return mappedOffers;
+//      } 
+//      else {
+//          let offersArray = [];
+//          return offersArray;
+//      }
+// }
+
+export async function offersOneLead (lead) {
+    const myMember = await getMyMember();
+    // console.log(myMember, "myMember to search offers")
+    const offers = await wixData.query("Offers")
+        .eq('inquiry', lead)
+        .include('villa')
+        //.ne("rejected", true) //do not show the offers already rejected
+        .eq("member", myMember) //ALERT here the filed name is JUST member and NOT myMember
+        .find(options)
+        if (offers.items.length > 0) {
+            let mappedOffers = await mapOffers(offers, myMember);
+            return mappedOffers;
+        } 
+        else {
+            let offersArray = [];
+            return offersArray;
+        }
+}
+
+export async function leaderOffersOneInquiry () { //inquiryId
+    const offers = await getOffersOneInquiry (); //inquiryId
+    return offers
+}
+
+async function getOffersOneInquiry () { //inquiryId
+    const myMember = await getMyMember();
+    //const myMember = "b1185365-4296-4c05-b047-91b302351335"; // info@sakamoto memnberID
+    // console.log(myMember, "myMember to search offers")
+    const offers = await wixData.query("Offers")
+        .include('villa')
+        .ne("rejected", true) //do not show the offers already rejected
+        .gt('checkIn', new Date())
+        //.eq('inquiry', inquiryId) // check if select as it should be the inquiry to work with in the plan
+        .eq("member", myMember) //ALERT here the filed name is JUST member and NOT myMember
+        .find(options)
+        if (offers.items.length > 0) {
+            let mappedOffers = await mapOffers(offers, myMember);
+            return mappedOffers;
+        } 
+        else {
+            let offersArray = [];
+            return offersArray;
+        }   
+}
+
+//Alert offer already rejected not shown to customer
+async function searchOffers() {
+    const myMember = await getMyMember();
+    // console.log(myMember, "myMember to search offers")
+    const offers = await wixData.query("Offers")
+        .include('villa')
+        //.ne("rejected", true) //do not show the offers already rejected
+        .gt('checkIn', new Date())
+        .eq("member", myMember) //ALERT here the filed name is JUST member and NOT myMember
+        .find(options)
+        if (offers.items.length > 0) {
+            let mappedOffers = await mapOffers(offers, myMember);
+            return mappedOffers;
+        } 
+        else {
+            let offersArray = [];
+            return offersArray;
+        }   
+}
+
+function mapOffers (offers, myMember) {
+    console.log(offers, myMember, 'offers, myMember')
+    return offers.items.map((item) => {
+                let {policy='fixed'} =item;
+            return {
+                "_id": item._id,
+                "title": item.title,
+                "price": item.price,
+                "totalPriceIclProcesssing": item.totalPriceIclProcesssing,
+                "processingFee": item.processingFee,
+                "counterOffer": item.counterOffer,
+                "villa": item.villa.title,
+                'villaId': item.villa._id,
+                "pic": item.villa.mainPic,
+                "gallery": item.villa.gallery,
+                "checkIn": item.checkIn,
+                "checkOut": item.checkOut,
+                "leaderId": myMember,
+                "expirationDate": item.expirationDate,
+                "expirationHour": item.expirationHour,
+                "bathrooms": item.villa.bathrooms,
+                "bedrooms": item.villa.bedrooms,
+                "guestNumber": item.guestNumber,
+                "balanceDate": item.balanceDate,
+                "upFront": item.upFront,
+                "secondPay": item.secondPay,
+                "secondPayDate": item.secondPayDate,
+                "balance": item.balance,
+                "nightsNumber": item.nightsNumber, 
+                "city": item.villa.municipio,
+                "score": item.villa.score,
+                "scorePerc": item.villa.scorePerc,
+                "counterAccepted": item.counterAccepted,
+                "counterRejected": item.counterRejected,
+                "offerRejected": item.rejected,
+                "member": myMember,
+                "bidCoins": item.bidCoins,
+                "rating": item.villa.scorePerc,
+                "category": item.villa.score,
+                'latitude': item.villa.address.location.latitude,
+                'longitude': item.villa.address.location.longitude,
+                'damageDeposit': item.villa.damageDeposit,
+                'policy': policy,
+                'inquiry': item.inquiry
+            };
+        });
+}
+
+
+
+function findOffer(id) {
+    console.log('searching for offer with id ', id);
+    return wixData.query("Offers")
+        .eq('_id', id)
+        .include('villa')
+        .include('member')
+        .include('city')
+        .find(options)
+        .then((results) => {
+            console.log(results, 'search for this offer which has been updated with counter offer');
+            if (results.items.length > 0) {
+                let data = results.items[0]; //see item below
+                return data;
+            } else { console.log('no offer found for this id') }
+        })
+}
+
+function sendEmailCounter(data) {
+    let {id, offeredPrice, currency, offeredPriceEur} = data;
+    console.log(data, 'data for this sendEmail');
+    wixData.query("Offers").eq('_id', id).limit(1).include('member').include('villa').include('city').find(options).then( results => {
+        const fullOffer = results.items[0];
+        let leaderName = fullOffer.member.firstName;
+        let leaderEmail = fullOffer.member.title;
+        let villaName = fullOffer.villa.title;
+        let city = fullOffer.city.title;
+        let checkin = fullOffer.checkIn;
+        let nights = fullOffer.nightsNumber;
+        if(offeredPrice !== offeredPriceEur) {var offerString = currency + ' ' + offeredPrice + ' = to €' + offeredPriceEur}
+        else {offerString = '€' + offeredPriceEur}
+        // console.log(leaderEmail, leaderName, city, villaName, checkin, nights, 'leaderEmail, leaderName, city, villaName, checkin, nights for the email');
+        let checkintostring = checkin.toLocaleDateString('en-GB', optionsDate);
+        let dynamicJson = {
+            "name": leaderName,
+            "villa": villaName,
+            "customerEmail": leaderEmail,
+            "checkin": checkintostring,
+            "counter": offerString,
+            "nights": nights,
+            "city": city
+        }
+        console.log(leaderEmail, dynamicJson, 'email, dynamicJson');
+        // ALERT SHOULD SEND TO AGENT /OWNER TOO with different template
+        dynamicEmail('info@sakamoto.com', leaderEmail, "Counter Offer submitted!", "Counter offer submission", true, 'counterOfferLeader', dynamicJson); // this send the email from sendGrid          
+        //              fromEmail,            toEmail,         subjectString,            sendingFunction,   booleanIfToAdmin,templateId,    JSON    
+    })  
+}
+
+import {setCurrency} from 'backend/currency.jsw';
+
+export async function updateCounterOffer(id, offeredPrice, currency) { //id is the offerId and offer is the amount offered
+    let data = {
+        id: id, 
+        offeredPrice: +offeredPrice,
+        currency: currency,
+        offeredPriceEur: null
+    }
+    if(currency !== 'EUR') {
+        return setCurrency(currency).then (rate => {
+            data.offeredPriceEur = Math.round(offeredPrice/rate);
+            return  updateCounterExecution (data);
+        });
+    } else {
+        data.offeredPriceEur = +offeredPrice;
+        return  updateCounterExecution (data);
+    }
+}
+
+
+function updateCounterExecution (data) { // offer is offered price
+    let {id, offeredPrice, currency, offeredPriceEur} = data;
+    // console.log('running update offer with counter offer');
+    //let offerString = offer.toString();
+    console.log(id, offeredPrice, 'id and offer');
+    if (typeof offeredPrice === 'string') {
+        offeredPrice = parseInt(offeredPrice, 10);
+    }
+    return wixData.get("Offers", id, options)
+    .then(async (offer) => {
+        console.log(offer, 'full offer to be updated');
+        let today = new Date();
+        let todayMs = today.getTime();
+        let tomorrow = todayMs + 8.64e+7;
+        let tomorrowDate = new Date(tomorrow);
+        // console.log(tomorrowDate);
+        offer.counterOffer = offeredPriceEur; // updated counter offer
+        offer.expirationDate = tomorrowDate;
+        //console.log(offer, 'item after setting new values and ready to update');
+        return await wixData.update("Offers", offer, options)
+            .then( (updatedOffer) => { 
+                //console.log('updatedOffer', updatedOffer)
+                sendEmailCounter(data);
+                return "Offer is updated with counterOffer";
+            })
+            .catch((err) => {
+                let errorMsg = err;
+                console.log(err, 'error message');
+                return errorMsg;
+            });
+    })
+}
+
+export function setRejected(id) { //propertyToChange 
+    return wixData.get("Offers", id, options)
+        .then((item) => {
+            item.rejected = true; // updated counter offer
+            return wixData.update("Offers", item, options).then( (updated) => {
+                return 'rejected';
+            })
+            .catch((err) => {
+                let errorMsg = err;
+                return errorMsg;
+            });
+        });
+}
+
+export async function searchVillas() {
+    //console.log(myMember, "myMember to search offers")
+    const villas = await wixData.query("Villas")
+        .ne("delisted", true)
+        .ne("isHidden", true)
+        .eq("approvedByAdmin", true)
+        .eq("pubblished", true)
+        .include('gallery')
+        .ascending("_createdDate")
+        //.limit(999)
+        .find(options)
+    return villas.items.map((item) => {
+        let gallery = item.gallery;
+        return {
+            "_id": item._id,
+            "name": item.title,
+            "pic": item.mainPic,
+            "city": item.municipio,
+            "score": item.score,
+            "scorePerc": item.scorePerc,
+            //"description": item.description,
+            "description": item.makesGreat,
+            "bedrooms": item.bedrooms,
+            "extraBeds": item.extraBeds,
+            "people": item.people,
+            "totGuests": item.totGuests,
+            "plot": item.plotSize,
+            "built": item.builtSize,
+            'gallery': gallery.pics,
+            'bath': item.bathrooms,
+            'latitude': item.latitude,
+            'longitude': item.longitude,
+        };
+    });
+}
+
+
+
+export async function setPartyforUser(partyId) {
+    //console.log("running the update from backend");
+    //console.log(partyId, "partyId");
+    var member = await getMyMember();
+    //console.log(member, "running the update of party for this myMember")
+    return wixData.query("MyMembers")
+        .eq("_id", member)
+        .find(options)
+        .then((results) => {
+            if (results.items.length > 0) {
+                let item = results.items[0];
+                item.kindOfParty = partyId; // updated last name
+                return wixData.update("MyMembers", item, options).then( () => 'updated')
+            } else {
+                // console.log("we found no member in this collection")
+                return "we found no member";
+            }
+        })
+        .catch((err) => {
+            let errorMsg = err;
+            return err;
+        });
+}
+
+export async function removeInquiry(id) {
+    var member = await getMyMember();
+    return wixData.get('Inquiries', id, options).then(inquiry => {
+        if (inquiry.myMember === member) {
+            return wixData.remove('Inquiries', id, options)
+            .then((results) => {
+                console.log(results, "results removed");
+                return 'removed';
+            })
+        }
+        else { 
+            return 'not correct member';
+        }
+    })
+    .catch((err) => {
+        return err;
+    });
+}
+
+// alert VERY IMPORTANT PAYWHAT 
+export async function payments (bookingId, payWhat) {
+    let payFound = await getPayments(bookingId, payWhat);
+    return payFound;
+}
+
+async function getPayments(bookingId, payWhat) {
+    //console.log(payWhat, 'payWhat');
+    const memberId = await getMyMember(); //return memberId
+    if (!bookingId) {
+        var pay = await wixData.query("Payments")
+        .eq("member", memberId)
+        .eq('payWhat', payWhat)
+        .ne('isB2BCompensation', true)
+        .find(options)
+    }
+    if (!payWhat) {
+        pay = await wixData.query("Payments")
+        .eq("booking", bookingId)
+        .eq("member", memberId)
+        .ne('isB2BCompensation', true)
+        .find(options)
+    } 
+    else if (payWhat === 'bookingAndCheckin') {
+        pay = await wixData.query("Payments")
+        .eq("booking", bookingId)
+        .eq('payWhat', 'booking')
+        .ne('isB2BCompensation', true)
+        .or(
+            wixData.query("Payments")
+            .eq("booking", bookingId)
+            .eq('payWhat', 'checkin')
+            .ne('isB2BCompensation', true)
+        )
+        .find(options)
+    }
+    else {
+        pay = await wixData.query("Payments")
+        .eq("booking", bookingId)
+        .eq('payWhat', payWhat)
+        .eq("member", memberId)
+        .ne('isB2BCompensation', true)
+        .find(options)
+    }
+    //console.log(bookingId, 'bookingId to search the payment for');
+    //console.log(pay, 'all payment backend for this booking');
+    return pay.items.map((item) => {
+        return {
+            "_id": item._id,
+            "payment": item.title,
+            "payDate": item.payDate,
+            "totalGrossPaid": item.totalGrossPaid,
+            "payMethod": item.payMethod,
+            'totalGrossPaidOwner': item.ownerGross,
+            'netPaid': item.ownerNet,
+            'payWhat': item.payWhat,
+            'order': item.order,
+            'agentPayment':item.paymentFee,
+        };
+    });
+}
+
+export async function  paymentOneOrder (orderId) {
+    console.log(orderId, 'orderId to find payment for');
+    const memberId = await getMyMember();
+    return wixData.query("Payments")
+    .eq("order", orderId)
+    .eq("member", memberId)
+    .find(options)
+    .then( results => {
+        console.log(results, 'payment found for ths order');
+        return mapPayment(results.items).then( mapped => {return mapped})
+    })
+}
+
+function mapPayment (payments) {
+    const mapped = Promise.all(
+    payments.map((item) => {
+        return {
+            "_id": item._id,
+            "payment": item.title,
+            "payDate": item.payDate,
+            "totalGrossPaid": item.totalGrossPaid,
+            "payMethod": item.payMethod,
+            'totalGrossPaidOwner': item.ownerGross,
+            'netPaid': item.ownerNet,
+            'payWhat': item.payWhat,
+            'order': item.order,
+            'agentPayment':item.paymentFee,
+        };
+    })
+    )
+    return Promise.all([mapped])
+    .then( (results) => {
+        return results[0];
+    });
+}
+
+export async function checkIfGotPassport () {
+    let user = wixUsersBackend.currentUser;
+    let email = await user.getEmail();
+    return wixData.query("MyMembers")
+        .eq("title", email)
+        .find(options)
+        .then((results) => {
+            let myMember = results.items[0];
+            if (myMember.identificationNumber) {
+                return 'gotcha';
+            } else {
+                return 'needed';
+            }
+    })
+}
+
+export async function savePassport (dataObj) {
+    const {type, number, nationality, isCompany=null, companyName=null, directorName=null, directorType=null, directorNumber=null} = dataObj;
+    let isCompanyBool=false;
+    isCompany === 'company' ? isCompanyBool = true : isCompanyBool = null;
+    let isSpanishCompany;
+    nationality === 'ES' ? isSpanishCompany = true : isSpanishCompany = false;
+    if(isCompanyBool === true) {
+        var companyObj = {
+            companyName: companyName,
+            directorName: directorName,
+            directorType: directorType,
+            directorNumber: directorNumber,
+            companyNationality: nationality,
+            isSpanishCompany: isSpanishCompany,
+            companyCode: number
+        }
+    } else{
+        companyObj = null;
+    }
+    let email = await getUserEmail();
+    if (email) {
+        return wixData.query("MyMembers")
+        .eq("title", email)
+        .find(options)
+        .then((results) => {
+            let member = results.items[0];
+            member.identificationNumber = number;
+            member.identificationType = type;
+            member.nationality = nationality;
+            member.isCompany = isCompanyBool;
+            member.companyData = companyObj;
+            return wixData.update('MyMembers', member, options).then( updated => {
+                return 'updated';
+            })
+            .catch((error) => {
+            console.log(error, 'error updating passport member');
+            return error
+        });
+    })
+    } else { return 'error, not user found'}
+}
+
+// import { members } from 'wix-members-backend';
+// import { currentMember } from 'wix-members-backend'; 
+
+
+export async function deleteMember () {
+    // const user = await currentMember.getMember();
+    const user = await wixUsersBackend.currentUser;
+    const memberId = await getMyMember();
+    // return wixUsersBackend.deleteUser(user._id)
+    return wixUsersBackend.deleteUser(user.id)
+    // return members.deleteMember(user._id) // the new shot of wix doesn't work
+    .then( memberDeleted => { 
+        // first check if this user has any payment; if payment keep it
+        return wixData.query("Payments").eq('member', memberId).find(options).then( payments =>{
+            if(payments.totalCount < 1) {return wixData.remove("MyMembers", memberId, options).then( removed => removed);}
+            else{return 'gotBookingSoMyMemberNotDeleted';}
+        });
+    })
+    .then(() => { return removeallOffersAllInquiriesForOneMember (memberId)})
+    .then( final => final)
+    .catch((error) => {
+        console.log(error);
+        return [error, 'error']
+    });
+}
+
+
+export function removeallOffersAllInquiriesForOneMember (memberId) {
+    let inquiriesDeleted = new Promise( (resolve, reject) => {
+        wixData.query('Inquiries').eq('myMember', memberId).find(options).then( results => {
+            if(results.totalCount > 0) {
+                    let counter = 0;
+                    results.items.forEach( inquiry => {wixData.remove('Inquiries', inquiry._id, options);
+                    counter++;
+                    if(counter===results.items.length) {resolve('deleted')}
+                })
+            }
+            else {resolve('deleted');}
+        })
+        .catch((error) => {
+            resolve('error');
+        });
+    });
+    const offersDeleted = new Promise( (resolve, reject) => {
+        wixData.query('Offers').eq('member', memberId).find(options).then( results => {
+            if(results.totalCount > 0) {
+                let counter = 0;
+                results.items.forEach( offer => {wixData.remove('Offers', offer._id, options)});
+                counter++;
+                if(counter===results.items.length) {resolve('deleted')}
+            }
+            else {resolve('deleted');}
+        })
+        .catch((error) => {
+            resolve('error');
+        });
+    });
+    return Promise.all([inquiriesDeleted, offersDeleted]).then( responses => responses);
+}
+

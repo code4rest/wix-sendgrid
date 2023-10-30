@@ -1,0 +1,70 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+import wixUsersBackend from 'wix-users-backend';
+import {searchAgent} from 'backend/agents';
+var options = {
+"suppressAuth": true,
+};
+
+export async function sendEmailInviteOnboarding(ownerFullName, ownerEmail, villaName, address) {
+    const agent = await searchAgent();
+    const agentId = agent[0];
+    const url = 'https://www.sakamoto.com/agents-owners?agent='+ agentId;
+    let dynamicJSON = {name: ownerFullName, villaName: villaName, agentName: agent[1], url, address: address}
+    dynamicEmail('info@sakamoto.com', ownerEmail, "Invite new owner", 'newMember', true, 'inviteOwner', dynamicJSON);
+    dynamicEmail('info@sakamoto.com', agent.email, "Invite new owner", 'newMember', false, 'inviteOwner', dynamicJSON);
+}
+// name, agentName, villaName, url
+//template inviteOwner
+
+// 'virtualTour'
+import {getOwnerIdFromEmail} from 'backend/owners.jsw';
+import {getMyFullMember} from 'backend/leaders.jsw';
+
+export async function connectOwnerToVilla (villaId) {
+    // if no owner yet
+    const ownerId = await getOwnerIdFromEmail();
+    if(ownerId !== 'notOwner') {
+        return wixData.get('Villas', villaId, options).then( (villa) => {
+            if(!villa.owner) {
+                villa.owner = ownerId;
+                return wixData.update('Villas', villa, options).then( (updated) => {
+                    return {
+                        status: 'ownerAssigned',
+                        ownerId: ownerId
+                    }
+                });
+            }
+            else {return {status: 'villa_Has_Owner_ContactAdmin'}
+            }
+        })
+        .catch(err => {return {status: 'error in get owner from id'}});
+    }
+    else {
+        // create new owner then add it to the villa
+        // const member = await getMyFullMember();
+        // const agent = await searchAgent();
+        // let agentId = agent[0];
+        // if(agentId === 'NotAgentxxxxxxxxxxxxxxxxxxxxxx') {agentId = 'de8ab612-3f47-4ef5-b739-eb4dd9d8a937'}
+        // const {name, surname, email} = member;
+        // let toInsert = {
+        //     "title": name + ' ' + surname,
+        //     "wixUserEmail": email,
+        //     "commission": 0.2,
+        //     "agent": agentId
+        // };
+        // return wixData.insert('Owners', toInsert, options)
+        // .then( (results) => {
+        //     const ownerId = results._id; 
+        //     return {
+        //         status: 'ownerAssigned',
+        //         ownerId: ownerId
+        //     }
+        // } )
+        // .catch( (err) => {
+        //     return {status: 'error in insert new owner'};
+        // } );
+        return {status: 'Need new owner'};
+    }
+}
+

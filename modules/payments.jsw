@@ -1,0 +1,198 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import {getOwnerIdFromEmail} from 'backend/owners.jsw';
+var options = {
+"suppressAuth": true,
+};
+
+export async function searchPaymentsOwnerDates  (fromDate, toDate) {
+  //let today = new Date()
+  let ownerId = await getOwnerIdFromEmail();
+  return wixData.query("Payments") 
+  .eq("owner", ownerId)
+  .ge('payDate', fromDate)
+  .le('payDate', toDate)
+  .ascending('payDate')
+  .include('booking')
+  .limit(999)
+  .find(options)
+  .then( (results) => {
+    return elaborateOwnerPayments(results).then(ownerPayments => {
+      console.log(ownerPayments, 'array from callback');
+      return ownerPayments
+      })
+  })
+  .catch((err) => {
+      let errorMsg = err;
+      return err;
+  });
+}
+
+export async function paymentOwnerSearchValue (searchValue) {
+let ownerId = await getOwnerIdFromEmail();
+console.log(ownerId, "ownerId"); 
+return wixData.query("Payments")
+  .eq("owner", ownerId)
+  .contains("title", searchValue)
+.or(wixData.query("Payments")
+  .eq("owner", ownerId)
+  .contains("paymentId", searchValue))
+.or(wixData.query("Payments")
+  .eq("owner", ownerId)
+  .contains("ownerNet", searchValue))
+.limit(999)
+.ascending('payDate')
+.include('booking')
+.find(options)
+.then( (results) => {
+    return elaborateOwnerPayments(results).then(ownerPayments => {
+      console.log(ownerPayments, 'array from callback');
+      return ownerPayments
+      })
+  })
+  .catch((err) => {
+      let errorMsg = err;
+      return err;
+  });
+}
+
+export async function paymentOwnerBooking (paymentId) {
+  let ownerId = await getOwnerIdFromEmail();
+  return wixData.query("Payments")
+  .eq("owner", ownerId)
+  .eq('booking', paymentId)
+  .include('booking')
+  .find(options)
+  .then( (results) => {
+      return elaborateOwnerPayments(results).then(ownerPayments => {
+        console.log(ownerPayments, 'array from callback');
+        return ownerPayments
+        })
+    })
+    .catch((err) => {
+        let errorMsg = err;
+        return err;
+    });
+}
+
+function elaborateOwnerPayments (results) {
+  let p1 = new Promise( (resolve, reject) => {
+  console.log(results, 'results elaborateOwnerPayments');
+  if (results.items.length > 0) {
+    let counter = 0;
+    let ownerPayments= [];
+    results.items.forEach( (item) => {
+      let {stripeFee=0, cardLastFour='NA', payMethod='NA', booking} = item;
+      let {title, lastname='', name='NA'} = booking;
+      if (item.ownerGross > 0) {
+        let payment = {
+        "_id": item._id,
+        "reference":item.title,
+        'booking': title,
+        'customer': name + ' ' + lastname,
+        "ownerNet": item.ownerNet,
+        "stripeFee": stripeFee,
+        "ownerGross": item.ownerGross,
+        "last4": cardLastFour,
+        "method": payMethod,
+        'date': item.payDate,
+      };
+      ownerPayments.push(payment);
+      } 
+    counter++;
+    if (counter === results.items.length) {
+      console.log(counter, results.items.length);
+      console.log(ownerPayments, 'ownerPyments');
+      resolve(ownerPayments) 
+    }
+  } );
+  } else {
+    resolve([]);
+  }
+  })
+  return p1.then( (paymentArray) => {
+    console.log(paymentArray, 'promise solved');
+    return paymentArray;
+});
+}
+
+import {searchAgent} from'backend/agents';
+// import {insertInvoice} from 'backend/stripeElements.jsw';
+
+export async function savePay (payObj) {
+  console.log(payObj, 'obj just landed backend')
+  var checkinDate = payObj.checkinDate;
+  const agent = await searchAgent();
+  const agentId = agent[0];
+  let contract = await wixData.get('Contracts', payObj.booking, options);
+  payObj.title === contract.title;
+  payObj.owner = contract.owner;
+  payObj.coAgent = contract.coAgent;
+  payObj.agent = agentId;
+  payObj.vatOncommission = 0;
+  payObj.description = '';
+  if (contract.agent === agentId) {
+    console.log(payObj, 'lets see here')
+    let paymentResponse = await insertPayment(payObj);
+    // let invoiceId = await insertInvoice(payObj);
+    return paymentResponse;
+  }
+  else {
+    return 'Not authorized agent';
+  }
+}
+
+function insertPayment (payObj) {
+  console.log(payObj, 'obj when passed to payment')
+  return wixData.insert('Payments', payObj, options).then( payInserted => {
+    console.log(payInserted, 'payment inserted backend');
+    if (payObj.invoice != null) { // if we have payment to reference let's do it
+        let p1 = new Promise( (resolve, reject) => {
+          resolve(insertInvoiceReferenceOnPayment (payInserted._id, payObj.invoice)); // cancel dates calendar
+        });
+        return p1.then( response => {
+          if (response != 'error in inserting reference') {
+              return [response, payInserted._id];
+          }
+          else {
+            return p1.then( response => {return [response, payInserted._id];})
+          }
+        })
+        .catch((err) => {
+            console.log(err)
+            return 'error';
+        });
+    }
+    return ['paymentInserted', payInserted._id];
+})
+}
+
+function insertInvoiceReferenceOnPayment (paymentId, invoiceId) {
+  return wixData.insertReference("Payments", "Invoices", paymentId, invoiceId) 
+  .then( () => {
+    console.log("Reference inserted");
+    return 'emitted';
+  } )
+  .catch((err) => {
+      console.log(err)
+      return 'error in inserting reference';
+  });
+}
+
+// function insertPayment2 (payObj) {
+//   return wixData.insert('Payments', payObj, options).then( (payInserted) => {
+//      if (payObj.invoice != null) { // if we have payment to reference let's do it
+//        return wixData.insertReference("Payments", "Invoices", payInserted._id, payObj.invoice, options)
+//        .then( () => {
+//          console.log("Reference inserted on payment");
+//          return 'emitted';
+//        } );
+//      } else {
+//      return ['paymentInserted', payInserted._id];
+//       }
+//  })
+//  .catch((err) => {
+//    console.log(err, 'error')
+//    return 'error'
+//  });
+// }

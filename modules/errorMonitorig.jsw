@@ -1,0 +1,38 @@
+import wixData from 'wix-data';
+
+var options = {
+    "suppressAuth": true,
+};
+
+//severityLevel = low, medium, high
+export function saveError (error, functionName, severityLevel) {
+    const dataType = typeof error;
+    let stack= null;
+    if(error?.stack) stack = error?.stack;
+    const item = {
+        title: stack,
+        functionModule: functionName
+    }
+    dataType === 'object' ? item.errorIfObj = error : item.ifText = error;
+    try {
+        wixData.insert("errorsMonitoring", item, options);
+    } catch (error) {
+        wixData.insert("errorsMonitoring", item, options);
+    }
+    if(severityLevel !== "low") sendEmail(severityLevel, functionName, error, stack)
+}
+
+import {dynamicEmail} from 'backend/sendGrid';
+
+
+// then create a template for this
+async function sendEmail (severityLevel, functionName, error, stack) {
+    const dynamicJson = {
+            name: "error with severity level " + severityLevel,
+            email: functionName,
+            phone: stack,
+            keyword: error
+        }
+   dynamicEmail('info@sakamoto.com', "sakamoto@gmail.com", "Error with importamt severity level", "monitoring errors", false, 'emailFAQNotReplied', dynamicJson); // this send the email from sendGrid  
+                //fromEmail,           toEmail,                   subjectString,               sendingFunction,   booleanIfToAdmin, templateId,     JSON        
+}

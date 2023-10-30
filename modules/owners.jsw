@@ -1,0 +1,1176 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import {getMyMember} from 'backend/leaders';
+import { updateCal } from 'backend/ical';
+import {dynamicEmail} from 'backend/sendGrid';
+import {queryAvailable} from 'backend/queryBooked'; // check if booked
+var options = {
+"suppressAuth": true,
+};
+
+// get user email
+export function getEmail() {
+const user = wixUsersBackend.currentUser;
+return user.getEmail()
+  .then( (email) => {
+      return email;    // "user@something.com"
+  } );
+}
+
+export async function getFullOwner () {
+  const email = await getEmail()
+  return wixData.query("Owners")
+    .eq("wixUserEmail", email)
+    .find(options)
+    .then((results) => {
+      if (results.totalCount === 1) {
+        const owner = results.items[0]
+        return owner;
+      } else {
+        console.log('crazy but no owner');
+        return 'notOwner';
+      }
+    })
+}
+
+// here you get the owner from ID
+export async function getOwnerIdFromEmail() {
+  const email = await getEmail()
+  return wixData.query("Owners")
+    .eq("wixUserEmail", email)
+    .find(options)
+    .then((results) => {
+      console.log(results, 'results search owner');
+      if (results.totalCount === 1) {
+        const ownerId = results.items[0]._id;
+        //let ownerName = results.items[0].title;
+        return ownerId;
+      } else {
+        console.log('crazy but no owner');
+        return 'notOwner';
+      }
+    })
+}
+
+export async function saveOwner (data) {
+  var allData = await fullOwner();
+  var ownerId = allData.ownerId;
+  let {
+          secondaryEmail, 
+          phone,
+          street, 
+          city, 
+          zip,
+          province,
+          country, 
+          nie, 
+          passport, 
+          // comnpany section
+          companyBool,
+          companyName,
+          companyNif,
+          companyVat,
+          // shared ownership
+          sharedOwnership,
+          secondSurname,
+          secondName,
+          secondEmail,
+          secondOwnerNif,
+          secondPhone,
+          secondNie,
+
+  } = data;
+  return wixData.get('Owners', ownerId, options)
+  .then (owner => {
+    if(!owner.stripeId) {
+      owner.secondaryEmail = secondaryEmail; 
+      owner.phone = phone;
+      owner.address = street; 
+      owner.city = city;
+      owner.zip =zip;
+      owner.province = province;
+      owner.state = country;
+      owner.nie = nie; 
+      owner.zip = zip;
+      owner.province = province;
+      owner.state = country;
+      owner.nif = nie; 
+      owner.passportNumber = passport; 
+      // comnpany section
+      owner.companyBool = companyBool;
+      owner.companyName = companyName;
+      owner.companyCode = companyNif;
+      owner.companyCode = companyVat;
+      // shared ownership
+      owner.sharedOwnership = sharedOwnership;
+      owner.secondSurname = secondSurname;
+      owner.secondName = secondName;
+      owner.secondEmail = secondEmail;
+      owner.secondPassportNum = secondOwnerNif;
+      owner.secondPhone = secondPhone;
+      owner.secondNie = secondNie;
+
+      return wixData.update('Owners', owner, options)
+      .then( (results) => {
+        return 'updated';
+      } )
+      .catch( (err) => {
+        return 'error';
+      } );
+    }
+    else {return 'alreadyStripeConnected';}
+  })
+}
+
+export function fullOwnerOwnerPage () {
+  return fullOwner ().then( async owner => {
+    const {paypal, iban, bicSwift} = owner;
+    const array = [paypal, iban, bicSwift];
+    const arrayNames = ['paypal', 'iban', 'bicSwift'];
+    await array.forEach( (el, index) => {
+      let length = el.length;
+      if(length > 4) {
+        let result = el.substring(length-4, length);
+        owner[arrayNames[index]] = '*********' + result;
+      }
+    });
+    return owner;
+  })
+}
+
+export async function fullOwner () {
+const email = await getEmail();
+//console.log(email, 'email owner search');
+return wixData.query("Owners") 
+    .eq("wixUserEmail", email)
+    .include('agent')
+    .find(options)  
+    .then( (results) => {
+      if(results.length === 1) {
+        let owner = results.items[0];
+        if (owner.stripeId) {
+          var stripeConnected = 'Connected';
+        } else { stripeConnected = 'NOT connected'}
+        let {companyBool=false, sharedOwnership=false, companyIsSpanishBool=false, companyCountryCode='NA', director='NA', directorNif='NA', cedente=false, passportNumber='NA'} = owner;
+        return {
+          ownerId: owner._id,
+          member: owner.member,
+          ownerEmail: email, 
+          name:owner.name, 
+          surname: owner.surname,
+          secondaryEmail: owner.secondaryEmail, 
+          phone: owner.phone,
+          wixUserEmail: owner.wixUserEmail,
+          countryCode:  owner.countryCode, 
+          nie: owner.nif, 
+          passportNumber: passportNumber, 
+          nif: owner.nif,
+          agentName: owner.agent.title, 
+          agentPic: owner.agent.agentPic, 
+          ownerLogo: owner.ownerLogo,
+          cendente: cedente,
+          tipoIdentificacion: owner.tipoIdentificacion,
+          address: owner.address,
+          // company section
+          companyBool: companyBool,
+          companyName: owner.companyName,
+          companyCode: owner.companyCode,
+          companyIsSpanishBool: companyIsSpanishBool,
+          companyCountryCode: companyCountryCode,
+          vat: owner.vat,
+          director: director, 
+          directorNif: directorNif,
+          // shared ownership
+          sharedOwnership: sharedOwnership,
+          secondSurname: owner.secondSurname,
+          secondName: owner.secondName,
+          secondEmail: owner.secondEmail,
+          secondOwnerPassport: owner.secondOwnerPassport,
+          secondOwnerNif: owner.secondOwnerNif,
+          secondPhone: owner.secondPhone,
+          secondNie: owner.secondNie,
+          // payment 
+          /*
+          let's cover by sercret and send on 2 steps authentication
+          paypal: owner.payPal,
+          iban: owner.iban,
+          swift: owner.bicSwift,
+          */
+          paypal: owner.payPal,
+          iban: owner.iban,
+          bicSwift: owner.bicSwift,
+          stripeConnected: stripeConnected,
+        }
+        
+      }
+   } );
+}
+
+// "_id": item._id,
+// "villaName": item.title,
+// "pic": item.mainPic,
+// "city": item.city.title,
+// 'owner': owner,
+// "ownerStripeId": item.owner.stripeId,
+// "referenciaCatastral": item.referenciaCatastral,
+// "people": item.people,
+// "bedrooms": item.bedrooms,
+// "bathrooms": item.bathrooms,
+// "damageDeposit": item.damageDeposit,
+// "turisticLicence": item.turisticLicence,
+// 'mainPic': item.mainPic,
+// 'nombreVia': item.nombreVia,
+// 'numVivienda': item.numVivienda,
+// 'municipio': item.municipio,
+// 'comissionPercentage': item.comissionPercentage,
+// 'cleningFee': item.cleningFee,
+// 'exclusivity': item.exclusivity,
+// 'agentDoCleaning': agentDoCleaning,
+// 'agentDecideRate': agentDecideRate,
+// 'upfrontPerc': item.upfrontPerc,
+// 'extraBedsPrice':item.extraBedPrice,
+// 'extraBeds': item.extraBeds,
+// 'commission': item.comissionPercentage,
+// 'bidCoins': item.bidCoins,
+// 'ratesDocument': item.ratesDocument,
+// 'ratesImage': item.ratesImage,
+
+export async function countAllOwner () {
+  var owner = await fullOwner();
+  const {ownerId, member, agentPic, agentName, name, stripeConnected} = owner;
+  let bookings = new Promise( (resolve, reject) => {
+  resolve(countBooking(ownerId, member)); // get total days, total revenues, booking num
+  });
+  let listings = new Promise( (resolve, reject) => {
+  resolve(countListings(ownerId));
+  });
+  /*
+  let ownerStay = new Promise( (resolve, reject) => {
+  resolve(countOwnerStay(ownerId));
+  });
+  */
+  return Promise.all([bookings, listings])
+  .then( ( (results) => {
+    return {
+      bookingData: results[0],
+      listings: results[1],
+      name: name,
+      agentPic: agentPic,
+      agentName: agentName,
+      stripeConnected:stripeConnected,
+    }
+  }))
+}
+
+function countListings (ownerId) {
+  return wixData.query("Villas")
+    .eq("owner", ownerId)
+    .find(options)
+    .then( (results) => {
+      return results.items.length;
+    })
+}
+
+// get total booking, ownerStay
+function countBooking (ownerId, member) {
+  const now = new Date();
+  return wixData.query("Contracts")
+    .eq("owner", ownerId)
+    .ge('checkIn', now)
+    .find(options)
+    .then( (results) => {
+      if (results.items.length > 0) { // we got booking
+        let totalNet=0;
+        let ownersStay = 0;
+        let counter =0;
+      let calcAll = new Promise( (resolve, reject) => {
+        results.items.forEach( (booking) => {
+          counter++;
+          let {commission=0, cleaningFee=0, bidCoins=0, extraCheckinFee=0, extraBedsComm=0, vatOncommission=0, extraCheckinStaff=0, extraBedsOwner=0, extraCheckinOwner=0, extraBedEur=0, extraCheckinEur=0, priceNoExtraBeds=0} = booking;
+          let totalPrice = priceNoExtraBeds + extraBedEur + extraCheckinEur;
+          let totalAgent = commission + extraBedsComm + extraCheckinFee + extraCheckinStaff + vatOncommission; 
+          totalNet = (totalPrice - totalAgent - bidCoins - cleaningFee) + totalNet;
+          if (booking.member === member) {
+            ownersStay = ownersStay + 1;
+          }
+          if (results.totalCount === counter) {
+            let data = {
+            bookingNum: results.totalCount,
+            totalNet: totalNet,
+            ownersStay: ownersStay,
+            }
+            console.log(data, 'data final loop')
+            resolve(data);
+          }
+        })
+        
+      });
+      return calcAll.then( (dataResponse) => {
+        //console.log(coins, 'coins to be spent yet solved in promise');
+        return dataResponse;
+      })
+      } else {
+        return {
+          bookingNum: 0,
+          totalNet: 0,
+          ownersStay: 0,
+        }
+      } 
+    })
+}
+
+
+async function ownerStripeACcountId (offerId) {
+return wixData.query("Offers") 
+    .include('villa')
+    .ne("counterRejected", true) //do not show the offers already rejected
+    .eq("_id", offerId) //ALERT here the filed name is JUST member and NOT myMember
+    .find(options)  
+    .then( async (results) => {
+      console.log(results, 'offer to be booked');
+    if(results.items.length > 0) {
+      const items = results.items;
+      const item = items[0];
+      console.log(item, "offer to book");
+      const ownerId = item.villa.owner;
+      console.log(item.villa, 'villa of this offer');
+      console.log(ownerId, 'ownerId');
+      const fullOwnerData = await ownerData(ownerId);
+      console.log(fullOwnerData, 'fullOwnerData added in the offer data');
+    return {
+      'owner': fullOwnerData,
+    };
+    } else {
+      return null
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+    console.log(code, errorMsg);
+  } );
+}
+
+
+export function insertBedroom (toInsert) {
+  // ALERT YOU SHOULD CHECK IF OWNER WHEN OPEN TO OTHER AGENTS OR OWNERS
+  // check if user is ownerData(// check if villaId is villa of this owner or this agent)
+  return wixData.insert("Bedrooms", toInsert, options)
+  .then( (results) => {
+    console.log(results, results._id)
+    if (results._id) {
+      let item = results; //see item below
+      return item;
+    } else {
+      return [];
+    }
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+  } );
+}
+
+export async function villasOwner () {
+  let owner = await fullOwner();
+  let ownerId = owner.ownerId;
+  let villas = await wixData.query("Villas") 
+    .eq("owner", ownerId) //ALERT here the filed name is JUST member and NOT myMember
+    .include('owner')
+    .find(options)
+    return villas.items.map( (item) => {
+        console.log(item.owner, "for each viila for this owner");
+      let {agentDoCleaning=false, agentDecideRate=false} = item
+      return {
+        "_id": item._id,
+        "villaName": item.title,
+        "pic": item.mainPic,
+        "city": item.city.title,
+        'owner': owner,
+        "ownerStripeId": item.owner.stripeId,
+        "referenciaCatastral": item.referenciaCatastral,
+        "people": item.people,
+        "bedrooms": item.bedrooms,
+        "bathrooms": item.bathrooms,
+        "damageDeposit": item.damageDeposit,
+        "turisticLicence": item.turisticLicence,
+        'mainPic': item.mainPic,
+        'nombreVia': item.nombreVia,
+        'numVivienda': item.numVivienda,
+        'municipio': item.municipio,
+        'comissionPercentage': item.comissionPercentage,
+        'cleningFee': item.cleningFee,
+        'exclusivity': item.exclusivity,
+        'agentDoCleaning': agentDoCleaning,
+        'agentDecideRate': agentDecideRate,
+        'upfrontPerc': item.upfrontPerc,
+        'extraBedsPrice':item.extraBedPrice,
+        'extraBeds': item.extraBeds,
+        'commission': item.comissionPercentage,
+        'bidCoins': item.bidCoins,
+        'ratesDocument': item.ratesDocument,
+        'ratesImage': item.ratesImage,
+      };
+  } )
+}
+
+export async function calTotPaid(bookingArray) {
+  var total = 0;
+  var counter = 0;
+  let p1 = new Promise( (resolve, reject) => {
+    bookingArray.forEach((bookingId)=> {
+      calPartials(bookingId).then( partial => {
+      if (partial > 0) {
+        total = total + partial;
+      }
+      counter++;
+      //console.log(counter === bookingArray.length, counter, bookingArray.length);
+      if (counter === bookingArray.length) {
+        resolve(total);
+      }
+      })
+    })
+  });
+  return p1.then( (finalAmount) => {
+    console.log(finalAmount, 'totalPaid');
+    return finalAmount;
+  });
+}
+
+
+async function calPartials (bookingId) {
+  let allPayment = await paymentOneBookingOwner(bookingId);
+  console.log(allPayment, 'all payment owner');
+  let paymentNum = allPayment.length;
+  if (paymentNum > 0) {
+    let counter =0;
+    var superTotal = 0;
+    let p2 = new Promise( (resolve, reject) => {
+      allPayment.forEach( (payment) => {
+        let {totalGrossPaidOwner=0} = payment;
+        if (totalGrossPaidOwner > 0) {superTotal = superTotal + totalGrossPaidOwner;}
+        counter++;
+        console.log(payment, superTotal, 'totalGrossPaidOwner for each, superTotal');
+        if (counter === paymentNum) {
+          resolve(superTotal);
+        }     
+      })  
+    });
+    return p2.then((partial)=> {
+      console.log('final Partial', partial, );
+      return partial;
+      });
+  } else {
+    return 0;
+  } 
+}
+
+export async function startOwner () {
+  let bookings = await searchBookingOwner();
+  return bookings;
+}
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+export async function selector() {
+let ownerId = await getOwnerIdFromEmail();
+  let results = await  wixData.query("Contracts") 
+    .eq("owner", ownerId)
+    .ne('deleted', true)
+    .include('villa')
+    .ascending('checkIn')
+    .limit(999)
+    .find(options);
+    if (results.length > 0) {
+      return results.items.map( (item) => {
+        return {
+          label: item.villa.title + "   " + item.checkIn.toLocaleDateString('en-GB', optionsDate),
+          value: item._id,
+        };
+    } );
+    } else {
+      return [];
+    } 
+}
+
+function mapResults (results, ownerId) {
+  return results.items.map( (item) => {
+        let {extraBedEur=0, extraCheckinEur=0, extraBedsComm=0, extraCheckinFee=0, extraCheckinStaff=0, vatOncommission=0, cleaningFee=0, bidCoins=0} = item;
+        if (item.villa._id === '247e2c13-5860-40aa-9528-64e43cbfbbd3') {
+          //console.log('it is ESPitality', item.totalPriceIclProcesssing, item);
+          var totOwner = item.totalPriceIclProcesssing;
+        } else {
+          let totalPrice = item.priceNoExtraBeds + extraBedEur + extraCheckinEur;
+          let totalAgent = item.commission + extraBedsComm + extraCheckinFee + extraCheckinStaff + vatOncommission; 
+          totOwner = totalPrice - totalAgent - bidCoins - cleaningFee;
+        }
+        let villaName;
+        item.villa.marinaNumber ? villaName = item.villa.title + ' ' + item.villa.marinaNumber : item.villa.title;
+        return {
+          "_id": item._id,
+          "reference":item.title,
+          "villa": villaName,
+          "pic": item.villa.mainPic,
+          "ownerPrice": totOwner,
+          "inDate": item.checkIn,
+          "outDate": item.checkOut,
+          "ownerId": ownerId,
+          'name': item.name,
+          'lastname': item.lastname,
+          'phone': item.phone,
+          'email': item.email,
+        };
+      } );
+}
+
+
+async function searchBookingOwner () {
+   //console.log("invoked start backend");
+let today = new Date();
+let todayMs = today.getTime();
+let lastWeek = todayMs - 604800000;
+let lastWeekDate = new Date(lastWeek);
+//console.log(userEmail, "userEmail");
+let ownerId = await getOwnerIdFromEmail();
+    let results = await wixData.query("Contracts") 
+    .eq("owner", ownerId)
+    .ge('checkIn', lastWeekDate)
+    .ne('deleted', true)
+    .ascending('checkIn')
+    .include('villa')
+    .limit(999)
+    .find(options);
+    if (results.length > 0) {
+      let bookings = await mapResults(results, ownerId);
+      return bookings;
+    } else {
+      return [];
+    } 
+}
+
+// export async function searchBookingMikke  () {
+//   const fromDate = new Date();
+//   const toDate = new Date(2022, 6, 30);
+//   let ownerId = "9076523b-ed17-413a-9ecc-3641d3dc18cd";
+//   let results = await wixData.query("Contracts") 
+//   .eq("owner", ownerId)
+//   .ne('deleted', true)
+//   .ge('checkIn', fromDate)
+//   .le('checkOut', toDate)
+//   .include('villa')
+//   .ascending('checkIn')
+//   .limit(999)
+//   .find(options);
+//   console.log(results, 'results');
+//   if (results.length > 0) {
+//     let bookings = await mapResults(results, ownerId);
+//     return bookings;
+//   } else {
+//     return [];
+//   } 
+// }
+
+export async function searchBookingOwnerDates  (fromDate, toDate) {
+  //let today = new Date();
+  let ownerId = await getOwnerIdFromEmail();
+  let results = await wixData.query("Contracts") 
+  .eq("owner", ownerId)
+  .ne('deleted', true)
+  .ge('checkIn', fromDate)
+  .le('checkOut', toDate)
+  .include('villa')
+  .ascending('checkIn')
+  .limit(999)
+  .find(options);
+  console.log(results, 'results');
+  if (results.length > 0) {
+    let bookings = await mapResults(results, ownerId);
+    return bookings;
+  } else {
+    return [];
+  } 
+}
+
+export async function bookingOwnerSearchValue (searchValue) {
+let ownerId = await getOwnerIdFromEmail();
+console.log(ownerId, "ownerId"); 
+return wixData.query("Contracts")
+  .eq("owner", ownerId)
+  .ne('deleted', true)
+  .contains("title", searchValue)
+.or(wixData.query("Contracts")
+  .eq("owner", ownerId)
+  .ne('deleted', true)
+  .contains("lastname", searchValue))
+.or(wixData.query("Contracts")
+  .eq("owner", ownerId)
+  .ne('deleted', true)
+  .contains("email", searchValue))
+.include('villa')
+.limit(999)
+.ascending('checkIn')
+.find(options)
+.then( async (results) => {
+  console.log(results, 'results');
+if (results.length > 0) {
+    let bookings = await mapResults(results, ownerId);
+    return bookings;
+  } else {
+    return [];
+  }
+})
+}
+
+export async function ownerSelfReservation () {
+let owner = await getFullOwner();
+console.log(owner, 'owner data');
+const today = new Date();
+let booking = await wixData.query("Contracts")
+    .ne('deleted', true)
+    .ge('checkIn', today)
+    .eq("owner", owner.id)
+    .eq('member', owner.member)
+    .include('villa')
+    .find(options); 
+    console.log(booking)
+    return booking.items.map( (item) => {
+    return {
+      '_id': item._id,
+      "inDate": item.checkIn,
+      "nightsNumber": item.nightsNumber,
+      "villa": item.villa.title,
+      'reference': item.title,
+    };
+  } );
+}
+
+// all the booking for customer... decide if search by email or _id
+export async function oneBookingOwner (bookingId) {
+let ownerId = await getOwnerIdFromEmail();
+//console.log(ownerId, bookingId)
+let booking = await wixData.query("Contracts")
+    .eq("owner", ownerId)
+    .eq('_id', bookingId)
+    .include('villa')
+    .include('owner')
+    .include('member')
+    .find(options); 
+    return booking.items.map( (item) => {
+       console.log(item, "this booking required by owner in details");
+       let {cleaningFee=0, bidCoins=0, extraCheckinFee=0, extraBedsComm=0, vatOncommission=0, extraCheckinStaff=0} = item; 
+       let {extraBedsOwner=0, extraCheckinOwner=0, extraBedEur=0, extraCheckinEur=0, phone="NA", email='NA', coAgentAmount=0} = item;
+       var cashBalance = item.cashBalance;
+       if ( cashBalance === null || cashBalance === undefined) {
+         cashBalance = false
+       } 
+       /*
+       if (item.amount179) {
+         var amount179 = item.amount179;
+       } else {
+         amount179 = 'NA'
+       }
+       */
+       let totalPrice = item.priceNoExtraBeds + extraBedEur + extraCheckinEur;
+      //  if (item.villa.agentDoCleaning === true) {
+      //    cleaningFee = item.cleaningFee;
+      //  } else { cleaningFee = 0 }
+       // ALERT  adding also coAgent amount to agent and removing from owner
+       let totalAgent = item.commission + extraBedsComm + extraCheckinFee + extraCheckinStaff + vatOncommission + coAgentAmount; 
+       let totOwner = totalPrice - totalAgent - bidCoins - cleaningFee;
+       let rentalOwner = totOwner  - extraBedsOwner - extraCheckinOwner - coAgentAmount;
+    return {
+      'id': item._id,
+      'memberName': item.name, 
+      'memberLastname': item.lastname, 
+      'memberPhone': phone, 
+      'memberEmail': email, 
+      'cashBalance': cashBalance, // bool
+      "reference":item.title,
+      "villa": item.villa.title,
+      "pic": item.villa.mainPic, //
+      "city": item.villa.municipio,
+      //"declared179": amount179,
+      "balanceDate": item.balanceDate,
+      "villaId": item.villa._id,
+      "checkIn": item.checkIn,
+      "checkOut": item.checkOut,
+      "nightsNumber": item.nightsNumber,
+      "guestNumber": item.guestNumber,
+      "noteToOwner": item.noteToOwner,
+      'damageAmount': item.villa.damageDeposit,
+      // price
+      "priceRentalNet": item.priceNoExtraBeds,
+      "extraBedEur": extraBedEur,
+      'extraCheckinEur' : extraCheckinEur,
+      "totPriceInclProcessing" : item.totalPriceIclProcesssing,
+      'totPrice': totalPrice,
+      // agent processing fee NOT calculated anywhere here
+      "extraBedtoAgent": extraBedsComm, 
+      'commissionOnRental': item.commission,
+      'extraCheckinFee': extraCheckinFee,
+      'extraCheckinStaff': extraCheckinStaff,
+      'vatOncommission': vatOncommission,
+      "totAgent": totalAgent,
+      // costs
+      "bidCoins": bidCoins,
+      "cleaningFee": cleaningFee,
+      // owner
+      "extraBedsOwner": extraBedsOwner,
+      'extraCheckinOwner': extraCheckinOwner,
+      'rentalOwner': rentalOwner,
+      'totOwner': totOwner,
+      // agent processing fee NOT calculated anywhere here but used for pay remainder intent
+      'processingFee': item.processingFee,
+    };
+  } );
+}
+/* total agent includeds:
+let totalAgent = Number(
+  agentExtraBedsEur + if any
+  commissionEur + 
+  processingFeeEur + 
+  cleaningFee + if clening is on us otherwise is 0
+  bidCoins if any included
+  );
+    if (vatPerc > 0 && plusVatCommission === true) { // add vat if to be added
+      totalAgent = totalAgent * (100 + vatPerc) / 100; 
+      */
+
+export async function saveOwnerImage (url, property) { // url of the image and name of the property to save it in the collection
+  let ownerId = await getOwnerIdFromEmail();
+  const acceptable = ['nifDocument', 'passportCopy', 'ownerLogo']
+  if (acceptable.indexOf(property) !== -1) {
+    return wixData.get('Owners', ownerId, options)
+    .then(owner => { 
+      owner[property] = url;
+      return wixData.update('Owners', owner, options)
+      .then( updated => {return 'updated'})
+    }).catch( (err) => {return err} );
+  } else { return 'not the owner or not a field we can change';}
+}
+
+export async function saveVillaImage (url, property, villaId) { // url of the image and name of the property to save it in the collection
+  let ownerId = await getOwnerIdFromEmail();
+  if (property === 'titleOfDeed' || property === 'turisticLicense') {
+    return wixData.get('Villas', villaId, options)
+    .then(villa => { 
+      if (villa.owner === ownerId) {
+        villa[property] = url;
+          return wixData.update('Villas', villa, options)
+          .then( updated => {return 'updated'})
+        } else { return 'not the villa for this owner'}
+    }).catch( (err) => {return err} );
+  } 
+}
+
+export function convertDates (checkinObj, checkoutObj) {
+  let  {yearIn, monthIn, dayIn, hoursIn} = checkinObj;
+  let  {yearOut, monthOut, dayOut, hoursOut} = checkoutObj;
+  let checkin = new Date(yearIn, monthIn, dayIn, hoursIn);
+  let checkout = new Date(yearOut, monthOut, dayOut, hoursOut);
+  console.log(checkin, checkout, 'converted dates');
+  return [checkin, checkout];
+}
+
+export async function saveOwnerDates(checkinObj, checkoutObj, villaId, nightsNumber, guestNum, note) {
+  let datesConverted = await convertDates(checkinObj, checkoutObj);
+  let checkIn = datesConverted[0];
+  let checkOut = datesConverted[1];
+  let available = await queryAvailable(checkIn, checkOut, villaId);
+  console.log(available, 'check available response');
+  if (available === 0) {
+  //first step we checked if available
+  //console.log(available, 'ok it is available so move on');
+  let  {yearIn, monthIn, dayIn, hoursIn} = checkinObj;
+  monthIn = monthIn + 1;
+  let villaIdShort = villaId.slice(0, 6); 
+  const ref = yearIn.toString() + monthIn.toString() + dayIn.toString() + '-ownerBooking-' + '/' + villaIdShort;
+  let ownerId = await getOwnerIdFromEmail();
+  let member = await getMyMember();
+  let today = new Date();
+  let villa = await villaData(villaId);
+  let ownerFromVilla = villa.owner._id;
+  //let's check the owner is really the owner
+  //console.log(ownerFromVilla, ownerId, (ownerFromVilla === ownerId), 'now lets check if the owner is the owner' )
+  if (ownerFromVilla === ownerId) {
+   // this if close to the end
+  let agentDoCleaning = villa.agentDoCleaning;
+  let cleanPlusVat = 0;
+    if (agentDoCleaning === true) {
+      let cleaningEur = villa.cleningFee;
+      cleanPlusVat = cleaningEur * 1.21;
+    } 
+  let toInsert = {
+    'title': ref,
+    'totalPriceIclProcesssing': 0, // price plus processing so final price before change in beds or checkin later stage
+    'member': member,
+    'totalPriceOwner': 0,
+    'checkIn': checkIn,
+    'checkOut': checkOut,
+    'villa': villaId,
+    'channel': 'direct owner',
+    'guestNumber': guestNum,
+    'nightsNumber': nightsNumber,
+    'price': 0, // ********** this is the final full price of the offer which includes  the extra beds and VAT but NOT processing fee which is added by the marketplace
+    'extraBedEur': 0, // total cost extra beds included (bed price times beds number)
+    'extraBedNo': 0,
+    'balanceDate': today,
+    'commission': 0,
+    'extraBedsComm': 0,
+    'processingFee': 0,
+    'totalAgent': cleanPlusVat,
+    'coAgentAmount': 0,
+    'ownerPrice': cleanPlusVat,
+    'extraBedsOwner': 0,
+    'noteToOwner': note,
+    'clientNote': 'booking reserved, you will be only charged for the cleaningh fee if we do manage it',
+    'agent': villa.agent,
+    'city': villa.city,
+    'upFront': 0,
+    'balance': 0,
+    'upfrontPerc': 0,
+    'bidCoins': 0,
+    'coAgent': villa.agent,
+    'commissionSplit': false,
+    'cleaningFee': cleanPlusVat,
+    'extraBedPrice': 0, // price per bed
+    'coAgentCommPerc': 0,
+    'comissionPercentage': 0,
+    'agentDoCleaning': villa.agentDoCleaning,
+    'priceNoExtraBeds': 0,
+    'villaName': villa.title,
+    'owner': villa.owner,
+    'extraCheckinEur' : 0,
+    'extraCheckinOwner': 0,
+    'extraCheckinFee': 0,
+    'extraCheckinStaff': 0,
+    'name': villa.owner.name,
+    'lastname': villa.owner.surname,
+    'phone': villa.owner.phone,
+    'email': villa.owner.wixUserEmail,
+    'vatOncommission': 0,
+    'ownerBooking': true,
+    'policy': 'fixed',
+    'secondPay': 0
+  };
+  console.log(toInsert, 'OBJ to insert in bookings collection Contracts');
+  return wixData.insert("Contracts", toInsert, options)
+    .then((results) => {
+      console.log(results, 'contract created after payment succedeed');
+      const booking = results; //see item below
+      const id = booking._id;
+      const memberId = booking.member;
+      console.log(id, 'bookingId to return');
+      let reference = booking.title;
+      let customerName = villa.owner.name;
+      let customerEmail = villa.owner.wixUserEmail;
+      let villaName = villa.title;
+      let  totalPriceIclProcesssing = cleanPlusVat;
+      let data = {
+        customerName:customerName, 
+        customerEmail:customerEmail, 
+        villa: villa,
+        checkIn:checkIn, 
+        checkOut:checkOut, 
+        totalPriceIclProcesssing:totalPriceIclProcesssing, 
+        nightsNumber:nightsNumber, 
+        guestNumber:guestNum, 
+        balanceDate:'Welcome home', 
+        city:villa.municipio, 
+        reference:reference,
+      }
+      console.log(data, 'JSON for email');
+      sendEmailBookingOwner(data);
+      // updateCal(checkIn, nightsNumber, id, villa._id);
+      return 'Reservation completed';
+    })
+    .catch((err) => {
+      let errorMsg = err;
+    });
+    } else {
+      return 'Are you the owner? Please, contact the admin';
+    }
+      
+  } else {
+    return 'Dates not available';
+  }
+}
+
+function ownerData (ownerId) {
+  return wixData.query("Owners")
+    .eq("_id", ownerId)
+    .find(options)
+    .then( (results) => {
+    if(results.items.length === 1) {
+      let items = results.items;
+      var owner = items[0];
+      return owner;
+    } else {
+      owner = [];
+      return owner
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+  } );
+    
+}
+
+export async function sendEmailBookingOwner (data) {
+  let {customerName, customerEmail, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, reference} = data;
+  //console.log(customerName, customerEmail, villaName, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, upFront, balance, balanceDate, city, damage, reference);
+  //console.log('customerName, customerEmail, villaName, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, upFront, balance, balanceDate, city, damage, reference');
+  const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail);
+  const checkOutString = checkOut.toLocaleDateString('en-GB', optionsDateEmail);
+  let {city, title, mainPic, turisticLicence='Pending'} = data.villa; 
+  let dynamicJson = {
+    "name":customerName,
+    "reference": reference,
+    "villa": title,
+    "checkin": checkInString,
+    "checkout": checkOutString,
+    "price": totalPriceIclProcesssing,
+    "nights": nightsNumber,
+    "guests": guestNumber,
+    "upfront": 0,
+    'balance': 0,
+    'balanceDateString': 'none',
+    'city': city.title,
+    'damage': 0,
+    'policy': "You are the boss",
+    'pic': mainPic,
+    'turistLicence': turisticLicence,
+    'specialTerms': 'Enjoy'
+  }
+  console.log(customerEmail, dynamicJson, 'email, dynamicJson');
+  dynamicEmail('info@sakamoto.com', customerEmail, "Congrats, Booking completed!", "Boooking confirmed owner", true, 'confirmBooking', dynamicJson); // this send the email from sendGrid          
+    //        fromEmail,              toEmail,         subjectString,                 sendingFunction,        IfToAdmin,  templateId,       JSON    
+}
+
+function villaData (villaId) {
+  return wixData.query('Villas')
+  .eq('_id', villaId)
+  .include('owner')
+  .include('city')
+  .find(options)
+  .then( (results) => {
+    let villa = results.items[0];
+    return villa;
+  })
+}
+
+const optionsDateEmail = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+          
+
+export async function ownerVillas() {
+  let ownerId = await getOwnerIdFromEmail();
+  let allItems = [];
+  return wixData.query('Villas')
+  //.eq('pubblished', true) let's go even for not published
+  //.eq('approvedByAdmin', true)
+  .eq('owner', ownerId)
+  .ascending('title')
+  .find(options)
+  .then((results) => {
+    if (results.totalCount > 0) {
+      let items = results.items;
+      items.forEach((item) => {
+        let oneItem = {
+          label: item.title,
+          value: item._id,
+          pic: item.mainPic
+        }
+        allItems.push(oneItem);
+      })
+      return allItems;
+    } 
+    return [];
+  });
+}
+
+export async function saveSignatureOwner (value) {
+  let ownerId = await getOwnerIdFromEmail();
+  return wixData.get("Owners", ownerId, options)
+  .then( (item) => {
+    item.signature =  value; // updated last name
+    console.log(item,' owner after adding the signature')
+    return wixData.update("Owners", item, options)
+    .then( (updated) => {
+      console.log('updated', updated.signature);
+      return 'updated';
+    })
+  } )
+  .catch( (err) => {
+    return err;
+  } );  
+  } 
+
+  export async function saveAddress (villaId, address) {
+    let ownerId = await getOwnerIdFromEmail();
+    return wixData.get('Villas', villaId, options)
+    .then( villa => {
+      villa.address = address;
+      villa.municipio = address.city;
+      villa.nombreVia = address.streetAddress.name;
+      villa.numVivienda = address.streetAddress.number;
+      villa.longitude = address.location.longitude;
+      villa.latitude = address.location.latitude;
+      villa.zip = address.postalCode;
+      villa.country = address.country;
+      return wixData.update('Villas', villa, options)
+      .then( (updated) => {
+        console.log('updated the address', updated.address);
+        return 'updated';
+      })
+      .catch( (err) => {
+       console.log(err, 'err in saving the villa address')
+      } );
+    });
+  }
+  /*
+
+  address is an obj as follow
+  {
+city: "Marbella"
+
+country: "ES"
+
+formatted: "Paseo de Francia, 441, 29604 Marbella, Málaga, Spain"
+
+location: {latitude: 36.5056192, longitude: -4.7731378}
+
+postalCode: "29604"
+
+streetAddress: {name: "Paseo de Francia", number: "441"}
+
+subdivision: "AL"
+}
+*/
+
+  export async function saveLicense (villaId, license) {
+    let ownerId = await getOwnerIdFromEmail();
+    return wixData.get('Villas', villaId, options)
+    .then( villa => {
+      villa.turisticLicence = license;
+      return wixData.update('Villas', villa, options)
+      .then( (updated) => {
+        console.log('updated the license', updated.address);
+        return 'updated';
+      })
+      .catch( (err) => {
+       console.log(err, 'err in saving the license')
+      } );
+    });
+  }
+
+import {sendEmailDeleted} from 'backend/addBooking.jsw';
+
+
+export async function deleteBookingOwner (contractId, reason, penalty) {
+  console.log(contractId, reason, penalty, 'contractId, reason, penalty');
+  const ownerId = await getOwnerIdFromEmail();
+  return wixData.get('Contracts', contractId, options).then(fullContract => {
+    // const {agent, createdByAgent} = fullContract;
+    if (fullContract.owner === ownerId) {// admin can do whatever
+      fullContract.deleted = true;
+      fullContract.reason =reason;
+      fullContract.penalty =penalty;
+      return wixData.update('Contracts', fullContract, options).then( deletedContract => {
+          sendEmailDeleted(deletedContract._id, reason, penalty);
+          return 'deleted'; 
+      })
+    }
+    else { return 'notAllowed'}
+  })
+  .catch( (err) => {
+    console.log(err);
+    return err;
+  } );
+}
+
+export async function paymentsOwner (bookingId, payWhat) {
+  let payFound = await getPaymentsOwner(bookingId, payWhat);
+  return payFound;
+}
+
+function paymentOneBookingOwner (bookingId) {
+  return wixData.query("Payments")
+  .eq('booking', bookingId)
+  // .eq('payWhat','booking')
+  .find(options)
+  .then (payments => {
+    return payments.items.map((item) => {
+        return {
+          "_id": item._id,
+          "payment": item.title,
+          "payDate": item.payDate,
+          "totalGrossPaid": item.totalGrossPaid,
+          "payMethod": item.payMethod,
+          'totalGrossPaidOwner': item.ownerGross,
+          'netPaid': item.ownerNet,
+          'payWhat': item.payWhat,
+          'order': item.order,
+          'agentPayment':item.paymentFee,
+        };
+    });
+  })
+  
+}
+async function getPaymentsOwner(bookingId, payWhat) {
+  //console.log(payWhat, 'payWhat');
+  if (!bookingId) {
+    const memberId = await getMyMember(); //return memberId
+    var pay = await wixData.query("Payments")
+    .eq("member", memberId)
+    .eq('payWhat', payWhat)
+    .find(options)
+  }
+  if (!payWhat) {
+    pay = await wixData.query("Payments")
+    .eq("booking", bookingId)
+    .find(options)
+  } 
+  else if (payWhat === 'bookingAndCheckin') {
+    pay = await wixData.query("Payments")
+    .eq("booking", bookingId)
+    .eq('payWhat', 'booking')
+    .or(
+      wixData.query("Payments")
+      .eq("booking", bookingId)
+      .eq('payWhat', 'checkin')
+    )
+    .find(options)
+  }
+  else {
+    pay = await wixData.query("Payments")
+    .eq("booking", bookingId)
+    .eq('payWhat', payWhat)
+    .ne('isB2BCompensation', true)
+    .find(options)
+  }
+  return pay.items.map((item) => {
+        return {
+          "_id": item._id,
+          "payment": item.title,
+          "payDate": item.payDate,
+          "totalGrossPaid": item.totalGrossPaid,
+          "payMethod": item.payMethod,
+          'totalGrossPaidOwner': item.ownerGross,
+          'netPaid': item.ownerNet,
+          'payWhat': item.payWhat,
+          'order': item.order,
+          'agentPayment':item.paymentFee,
+        };
+  });
+}
+
+
+export function welcomePack (bookingId) {
+  return wixData.query("Contracts")
+    .eq('_id', bookingId)
+    .find(options)
+    .then( results => { 
+      let {welcomePack=[]} = results.items[0];
+      return welcomePack;
+    });
+}

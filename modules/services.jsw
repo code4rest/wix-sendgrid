@@ -1,0 +1,1316 @@
+import wixData from 'wix-data';
+import { getStripeKey } from 'backend/secrets.js';
+import {dynamicEmail} from 'backend/sendGrid';
+import { Stripe } from 'stripe';
+import {getMyFullMember} from 'backend/leaders';
+
+var options = {
+  "suppressAuth": true,
+};
+
+const optionsDate = {
+  day: "numeric",
+  month: "short",
+  year: "numeric"
+};
+
+
+// function time4Digits (time) {
+//  let timeSplit = time.split(':',5); // transform the string in array; : is the separator and 2 is the length of each string in the array
+//  let hours = timeSplit[0]; 
+//  let minute = timeSplit[1];
+//  let fourDigits = hours + ':' + minute; // keep string
+//  //fourDigits = parseInt(fourDigits, 10); // now it's a number
+//  console.log(fourDigits, 'fourDigits and typeof', typeof fourDigits);
+//  return fourDigits;
+// }
+
+export function addDetail (serviceId, propertyToUpdate, value) {
+  wixData.get('Services', serviceId, options)
+  .then ( (service) => {
+    service[propertyToUpdate] = value;
+  wixData.update("Services", service, options);
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+  } );
+}
+
+// for the detailed service page
+export function oneService(serviceId) {
+  console.log(serviceId, 'serviceId backend to search for');
+    return wixData.query('Services')
+  .eq('_id', serviceId)
+  .include('provider')
+  .eq('isApproved', true)
+  .find(options)
+  .then ((services) => {
+    let service = services.items[0];
+    console.log(service, 'the service item backend')
+    if (service.provider.reservedCal) {
+      var reserved = service.provider.reservedCal; //if the provider was one person for variuos services
+    } else {
+      reserved = service.reserved;
+    }
+    let onlineAvailability = false;
+    if(service.onlineAvailability) {onlineAvailability = service.onlineAvailability}
+    return {
+      _id: service._id,
+      pic: service.mainPic,
+      title: service.title,
+      firstLine: service.firstLine,
+      description1: service.description,
+      video: service.video,
+      hedoQuote: service.hedoQuote,
+      secondTitle: service.secondTitle,
+      secondLine: service.secondLine,
+      secondDescription: service.secondDescription,
+      secondPic: service.secondPic,
+      price:service.price,
+      perPerson: service.isPerPerson,
+      minPeople: service.minPeople,
+      maxPeople: service.maxPeople,
+
+      providerName: service.provider.title,
+      providerCategory: service.provider.providerCategory,
+      providerPic: service.provider.providerPic,  
+      providerDescription: service.provider.providerDescription,
+
+      hasSlot: service.hasSlot,
+      availablePerSlot: service.availablePerSlot,
+      slots: service.slots,
+      reserved: reserved,
+      serviceDuration: service.serviceDuration,
+
+      extraService: service.extraService,
+
+      gallery: service.gallery,
+      onlineAvailability: onlineAvailability
+    } 
+  })
+}
+
+// for the buy page
+export function serviceFrontend (serviceId) {
+  return serviceObj(serviceId)
+  .then( (obj) => {
+    //console.log(obj, 'obj of service');
+    let extraPrice =0;
+    if (obj.extraPrice) {
+      extraPrice = obj.extraPrice;
+    }
+    if (obj.provider.reservedCal) {
+      var reserved = obj.provider.reservedCal; //if the provider was one person for variuos services
+    } else {
+      reserved = obj.reserved;
+    }
+    //console.log(typeof reserved, reserved)
+    //if(typeof reserved === 'string') {reserved = JSON.parse(reserved);}
+    let {upfrontPerc=0, extraService=[], onlineAvailability=false, providedCities=[]} = obj;
+    return {  
+      name: obj.title,
+      pic : obj.mainPic,
+      hedoQuote : obj.hedoQuote,
+      description: obj.description, 
+
+      price: obj.price,
+
+      isPerPerson : obj.isPerPerson, //bool
+      minPeople : obj.minPeople,
+      maxPeople: obj.maxPeople,
+
+      extraService: extraService,
+
+      upfrontPerc : upfrontPerc,
+      cashUponArrival : obj.cashUponArrival,
+
+      hasSlot: obj.hasSlot,
+      availablePerSlot: obj.availablePerSlot,
+      slots: obj.slots,
+      reserved: reserved,
+      serviceDuration: obj.serviceDuration,
+      
+      fromTime: obj.fromTime,
+      toTime: obj.toTime, 
+
+      platformFee: obj.platformFee,
+      onlineAvailability: onlineAvailability,
+      providedCities: providedCities    
+    }
+  })
+}
+
+export async function intentCreateService(order) {
+  let intent_secret = await intent(order);
+  return intent_secret;
+}
+
+async function calcExtra (extraBackend, extraArray) {
+  //console.log(extraBackend, extraArray, 'extraBackend, extraArray passed to callback for calcExtra');
+  let extrasTotal = 0;
+  let counter = 0;
+  let length = extraArray.length;
+  let p1 = new Promise( (resolve, reject) => {
+  extraArray.forEach ( (addOn) => {
+    //console.log(addOn, 'addon in loop so each extraArray item')
+    let index = extraBackend.findIndex(x => x.extraDescription === addOn.extraDescription);
+    //console.log(index, 'index in loop extra');
+    let addonPrice = extraBackend[index].extraPrice;
+    //console.log(extraBackend[index], 'extraItem from backend array', addonPrice, 'price of the addon from backend');
+    let addOnTotal = addOn.qty * addonPrice;
+    if (addOnTotal > 0) {
+      extrasTotal = extrasTotal + addOnTotal;
+    }
+    counter++;  
+  })
+  if (counter === length) {
+      //console.log(extrasTotal, 'extratotal');
+      console.log(counter, length, 'counter and length');
+      resolve(extrasTotal); // resolve when end the loop 
+    }
+  });
+
+  return p1.then((totalForExtra) => { // so we can return the extrasTotal end of the loop
+  //console.log(totalForExtra, 'total for extras before return end of its calc');
+    return parseInt(totalForExtra, 10);
+  })
+}
+async function calcTotal (data, quantity, extraArray) { // data = serviceData
+console.log(data, quantity, extraArray, 'data, extraArray passed to main function calcTotal');
+  const price = parseInt(data.price, 10);
+  const quantityNum = parseInt(quantity, 10)
+  const baseTotal = price * quantityNum; // base tota before extras
+  //console.log(price, quantityNum, baseTotal, typeof price, typeof quantityNum, typeof baseTotal); 
+
+  if (extraArray.length > 0) {
+    let extraBackend = data.extraService;
+    var extraEur = await calcExtra(extraBackend, extraArray);
+    //console.log('case with extras = ', extraEur, typeof extraEur, 'type of extraEur');
+    var total = baseTotal + extraEur;
+  } else {
+    total = baseTotal;
+  }
+  return total;
+}
+
+/*
+  order = {
+      serviceId: await session.getItem("serviceId"), 
+      quantity: amount, 
+      extraArray: extraArray,  
+      deliveryDate: $w('#selectedDate').value, 
+      deliveryTime: deliverytime, 
+      cardHolder: $w('#cardHolder').value,
+      upfront: upfront,
+      email: $w('#email').value,
+    }
+*/
+
+
+async function intent ({serviceId, quantity, extraArray, deliveryDate, deliveryTime, cardHolder='', upfront, email, upfrontOrAll}) { // addOn bool 
+  deliveryDate.setHours(14);
+  const serviceData = await serviceObj(serviceId); //get the data about the offer
+  const {platformFee=0} = serviceData;
+  const providerStripeAccountId = serviceData.provider.stripeId;
+  // const providerStripePublicKey = serviceData.provider.stripePublishableKey;
+  // const providerSecretKey = serviceData.provider.accessToken;
+  // ALERT WE NEED TO MOLTIPLY BY 100 BECAUSE THOSE ARE CENTS
+  const totalPrice = await calcTotal(serviceData, quantity, extraArray);
+  //console.log(totalPrice, 'totalRate calculated backend and typeof', typeof totalPrice);
+  //console.log(upfront, typeof upfront, 'upfront, typeof upfront')
+  //upfront = parseInt(upfront, 10)
+  if (upfrontOrAll === 'upfront') { // let's see if only upfront or total
+    if (serviceData.upfrontPerc) {
+      var totalCents = Math.round(totalPrice * serviceData.upfrontPerc); // already in cents
+    } else {
+      totalCents = Math.round(totalPrice * 100);
+    } 
+  } else {
+    totalCents = Math.round(totalPrice * 100);
+  }
+  console.log(totalCents, 'totalCents after selecting if upfront');
+  const feeCents = Math.round( (totalPrice * Number(platformFee)) ); // already cents with no dividing by 100
+  // now send the payment intent
+  // ALERT LIVE
+  const key = await getStripeKey(); // LIVE
+  //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+  const stripe = await new Stripe(key);
+  const deliveryDateString = deliveryDate.toLocaleDateString("en-GB", optionsDate); 
+  if (extraArray.length > 0) {
+    var upgradeArray = extraArray;
+  } else { upgradeArray = [{extraDescription: "No extra included", qty: ''}]}
+
+  let paidNoCents = Number(totalCents) / 100;
+  console.log(paidNoCents, 'paidNoCents', totalCents, 'totalCents');
+  // Create the PaymentIntent
+  const paymentIntent = await stripe.paymentIntents.create({
+    payment_method_types: ['card'],
+    amount: totalCents,
+    currency: 'eur',
+    description: "customer: " + cardHolder + ' Service ' + serviceData.title + ',  ' + 'totalPrice: €' + totalPrice,
+    receipt_email: email,
+    metadata: {
+      "customer": cardHolder,
+      'email': email,
+      'service': serviceData.title,
+      'quantity': quantity,
+      'totalPrice': totalPrice,
+      'upfrontPerc': upfront,
+      'upfrontPaid': paidNoCents,
+      'booking type': 'Non-Refundable for any cancellation',
+      'deliveryDay': deliveryDateString,
+      'deliveryDateFomat': deliveryDate.getTime(),
+      'deliveryTime': deliveryTime,
+      'upgrades': JSON.stringify(upgradeArray)
+    },
+    application_fee_amount: feeCents, // we grabd it from backned as we did from offer
+  }, {
+    stripeAccount: providerStripeAccountId, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+  });
+  console.log(paymentIntent, 'full intent backend');
+  const paymentSecretClient = paymentIntent.client_secret;
+  console.log(paymentSecretClient, 'paymentSecretClient');
+  return paymentSecretClient;
+}
+
+
+export function serviceObj (serviceId) {
+  return wixData.query('Services')
+  .eq('_id', serviceId)
+  .include('provider')
+  .eq('isListed', true)
+  .eq('isApproved', true)
+  .find(options)
+  .then ((services) => {
+    return services.items[0];   
+  })
+}
+
+export async function providerAccountId (serviceId) {
+  let service = await serviceObj (serviceId);
+  return service.provider.stripeId;
+}
+
+export function registerManually () {
+  registerOrder("1366d6ff-9a04-4000-ae48-242292fd3635", "pi_3L8RP3J3qZEIAs050gbIFazC", "Rifugio202277 11ba53a2-72f9-4b7b-a91a-3c66806b864b", "Puerto Banus Harbour")
+}
+//bookingId, paymentIntentId, connectedAccount, inTime, outTime, payWhat, serviceId
+//confirmationPay (null, paymentIntentId, connectedAccount, null, null, 'service', serviceId); // service is whatToPayFor,
+export async function registerOrder(serviceId, paymentIntentId, bookingId, address) {         
+  const connectedAccount = await providerAccountId (serviceId);
+  const paymentIdAndInvoiceIds = await confirmation (serviceId, paymentIntentId, connectedAccount, bookingId, address);
+  return paymentIdAndInvoiceIds;
+}
+
+//test add member ID
+// export async function confirmation (serviceId, paymentIntentId, connectedAccount, bookingId, address) {
+// // ALERT LIVE
+//  const key = await getStripeKey(); // LIVE
+//  //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+//  const stripe = await new Stripe(key);
+//  //ALERT here retrieving the payment intent and in insert payment we retrieve the res
+//  const intentResponse = await stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+//    paymentIntentId, {
+//      stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+//    });
+//  const charges = intentResponse.charges.data[0];
+//  console.log(intentResponse, charges, 'intent and charges obj after payment confirmation');
+//  const paymentIdAndInvoiceIds = await insertPaymentService(serviceId, intentResponse, {memberId: "XXXXXXXXX"}, bookingId, address);
+//  //console.log(paymentIdAndInvoiceIds, 'the payment Id');
+//  return paymentIdAndInvoiceIds;
+// }      
+
+
+export async function confirmation (serviceId, paymentIntentId, connectedAccount, bookingId, address) {
+// ALERT LIVE
+  const key = await getStripeKey(); // LIVE
+  //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+  const stripe = await new Stripe(key);
+  //ALERT here retrieving the payment intent and in insert payment we retrieve the res
+  const intentResponse = await stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+    paymentIntentId, {
+      stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+    });
+  const charges = intentResponse.charges.data[0];
+  console.log(intentResponse, charges, 'intent and charges obj after payment confirmation');
+  const fullMember = await getMyFullMember();
+  const paymentIdAndInvoiceIds = await insertPaymentService(serviceId, intentResponse, fullMember, bookingId, address);
+  //console.log(paymentIdAndInvoiceIds, 'the payment Id');
+  return paymentIdAndInvoiceIds;
+}
+
+// metadata.netProvider = providerNetPaid;
+// metadata.stripeFee = notCentsStripeFees;
+// metadata.processing = applicationFee;
+function insertOrder (serviceId, fullMember, metadata, providerId, unitPrice, bookingId, address) {
+  //JSON.parse(metadata);
+  const {memberId, phone=null, name, surname, email} = fullMember;
+  const fullName = name + ' ' + surname;
+  const {netProvider, stripeFee=0, processing} = metadata;
+  //console.log(metadata, typeof metadata, typeof metadata.totalPrice, typeof metadata.quantity, 'metadata, typeof metadata, typeof metadata.totalPrice, typeof metadata.quantity')
+  let totalPrice =  parseInt(metadata.totalPrice, 10);
+  let qty = parseInt(metadata.quantity, 10);
+  let baseService = unitPrice * qty;
+  let extraEur = totalPrice - baseService;
+  let date = new Date(+metadata.deliveryDateFomat);
+  date.setHours(13); // or this shit of wix confused the date with the differetn timezone
+  let toInsert = {
+    title: metadata.service,
+    member: memberId,
+    service: serviceId, 
+    quantity: qty,
+    unitPrice: unitPrice,
+    totalPrice: totalPrice,
+    provider: providerId,
+    extraService: JSON.parse(metadata.upgrades),
+    deliveryDate: metadata.deliveryDay,
+    deliveryTime: metadata.deliveryTime,
+    deliveryDateFomat: date,
+    totalExtra: extraEur,
+    customerName: fullName,
+    customerEmail: email,
+    customerPhone: phone,
+    booking: bookingId,
+    address: address,
+    isConfirmedByProvider: true,
+    isPaid: true
+  }
+  //console.log(toInsert, 'OBJ to insert in Orders collection');
+  return wixData.insert("Orders", toInsert, options)
+    .then(async (results) => {
+      console.log(results, 'order created for service');
+      const orderId = results._id;
+      // we need to setBooked the calendars adding the slot in service AND in provider is only one calendar
+      // both so if they will switch to multiple calendars, we are ready
+      updateProviderAllCal(serviceId, orderId, providerId, metadata.deliveryDay, metadata.deliveryTime);
+      return orderId; 
+    })
+    .catch((err) => {
+      let errorMsg = err;
+    });
+}
+
+
+// keep it in case you needed to update the cal for one provider
+export function updateOneProviderCal () {
+  const today = new Date ();
+  const providerId = '83ca4bf9-46c9-4784-b162-076478368ef0';
+  wixData.query('Orders').eq('provider', providerId).include('service').ge('deliveryDateFomat', today).find(options).then( results => {
+    console.log(results.totalCount, results.items, 'results.totalCount, results.items');
+    const orders = results.items;
+    for (var i = 0; i < orders.length; i++) {
+      if(orders[i].service.uniqueCalProvider === true) {
+        const {service, _id, provider, deliveryDateFomat, deliveryTime} = orders[i];
+        console.log(service, _id, provider, deliveryDateFomat, deliveryTime);
+        update(service, _id, provider, deliveryDateFomat, deliveryTime, i);
+        if(i+1 === orders.length) {
+          console.log('concluded', i+1, orders.length);
+        }
+      }
+    }
+  });
+}
+
+function update (service, _id, provider, deliveryDateFomat, deliveryTime, index) {setTimeout( () => {updateProviderAllCal(service._id, _id, provider, deliveryDateFomat, deliveryTime)}, 1000*index)}
+
+export function updateProviderAllCal (serviceId, orderId, providerId, deliveryDay, deliveryTime) {
+  updateReservedCal(serviceId, deliveryDay, deliveryTime, orderId);
+  updateProviderCal(serviceId, providerId, deliveryDay, deliveryTime, orderId);
+}
+/*
+export async function test (serviceId, providerId, deliveryDay, deliveryTime, orderId) {
+  console.log(deliveryDay,'deliveryDay')
+  let testService = await updateReservedCal(serviceId, deliveryDay, deliveryTime, orderId);
+  console.log(testService, 'service before returning front end');
+  let testProvider = await updateProviderCal(serviceId, providerId, deliveryDay, deliveryTime, orderId);
+  console.log(testService, 'provider before returning front end');
+  return [testProvider, testService];
+}
+*/
+
+// address: {formatted: "Lugar, Urb. Cascada de Camojan, 5D, 29602 Marbella, Málaga, Spain", country: "ES", location: {latitude: 36.5296111, longitude: -4.9047467}, streetAddress: {number: "5D", name: "Urbanización Cascada de Camojan", apt: ""}, postalCode: "29602", …}
+// deliveryDate: Mon Feb 28 2022 14:00:00 GMT+0100 (CET)
+// deliveryDate2: Wed Mar 02 2022 14:00:00 GMT+0100 (CET)
+// deliveryTime2: "14:00"
+// extraArray: [{extraDescription: "1 extra hour stay", qty: 1}, {extraDescription: "Cheeky butler and stripper combo", qty: 1}] (2)
+// quantity: 1
+// serviceId: "3e0799b3-192a-4e38-812c-0404d6554380"
+import {getFullImageURL} from 'backend/offers'; 
+
+export async function reserveNoPayment  (order) { // pendingBool = true when to be confirmed
+  let onlineAvailability=false;
+  if(order.onlineAvailability) {onlineAvailability = order.onlineAvailability}
+  let {serviceId, quantity, extraArray=[], deliveryDate, deliveryTime, address=null, deliveryDate2, deliveryTime2, bookingId} =order;
+  //console.log('taking the reservation no payment');
+  const fullMember = await getMyFullMember();
+  const memberId = fullMember.memberId;
+  const serviceData = await serviceObj(serviceId); //get the data about the offer
+  let isConfirmedByProvider = false;
+  if(serviceData.onlineAvailability === true) {isConfirmedByProvider = true;}
+  const {upfrontPerc=0, cashUponArrival=false, price, title, provider} =serviceData;
+  //console.log(serviceData.cashUponArrival === true && upfrontPerc <= 0, 'if tru we should move on');
+  console.log(provider, 'provider');
+  if ( (cashUponArrival === true && upfrontPerc === 0) || (onlineAvailability !== true)) {
+    //console.log('confirmed backend this has not to be paid');
+    const totalPrice = await calcTotal(serviceData, quantity, extraArray);
+    //console.log(totalPrice, 'got a totaprice');
+    let baseService =price * quantity;
+    let extraEur = totalPrice - baseService;
+    //let deliveryOnDate = new Date(deliveryDate); // coming in ms the deliveryDate
+    let toInsert = {
+      title: title,
+      member: memberId,
+      service: serviceId, 
+      quantity: quantity,
+      unitPrice: price,
+      totalPrice: totalPrice,
+      provider: provider,
+      extraService: extraArray,
+      deliveryDate: deliveryDate.toLocaleDateString('en-GB', optionsDate),
+      deliveryDateFomat: deliveryDate,
+      deliveryTime: deliveryTime,
+      totalExtra: extraEur,
+      cashUponArrival: cashUponArrival,
+      address: address,
+      isConfirmedByProvider: isConfirmedByProvider,
+      isPaid: false,
+      deliveryDate2: deliveryDate2,
+      deliveryTime2: deliveryTime2,
+      bookingId: bookingId,
+      customerName: fullMember.name + " " + fullMember.surname,
+      customerPhone: fullMember.phone,
+      customerEmail: fullMember.email
+    }
+    if(serviceData.onlineAvailability) { if(serviceData.onlineAvailability === true) {toInsert.isConfirmedByProvider = true;} } // 
+    //console.log(toInsert, 'OBJ to insert in Orders collection');
+    return wixData.insert("Orders", toInsert, options)
+      .then(async (results) => {
+        //console.log(results, 'order created for service');
+        const orderId = results._id;
+        updateReservedCal(serviceId, deliveryDate, deliveryTime, orderId).then( resp => {if(resp === 'error') {updateReservedCal(serviceId, deliveryDate, deliveryTime, orderId);}});
+        updateProviderCal(serviceId, serviceData.provider._id, deliveryDate, deliveryTime, orderId).then( resp => {
+          if(resp === 'error') {updateProviderCal(serviceId, serviceData.provider._id, deliveryDate, deliveryTime, orderId);}
+        });
+        const picConverted = await getFullImageURL(serviceData.mainPic);
+        let dynamicJson = {
+          name: fullMember.name,
+          serviceName: title,
+          pic: picConverted,
+          quantity: quantity.toString(),
+          upgrades: extraArray,
+          totalPrice: totalPrice.toString(),
+          paid: 'no payment yet',
+          remainder: totalPrice.toString(),
+          deliveryDay: deliveryDate.toLocaleDateString('en-GB', optionsDate),
+          deliveryTime: deliveryTime
+        }
+        if(order.deliveryDate2 !== null) {
+          dynamicJson.deliveryDay2 = order.deliveryDate2.toLocaleDateString('en-GB', optionsDate),
+          dynamicJson.deliveryTime2 = order.deliveryTime2
+        }
+        console.log(fullMember.email, dynamicJson, 'email, dynamicJson');
+        if(toInsert.onlineAvailability !== true) {
+          dynamicEmail('info@sakamoto.com', fullMember.email, "Order request submitted", "Order requested", true, 'serviceToConfirm', dynamicJson);
+          getProviderEmail(serviceId).then( providerEmail => {
+            dynamicEmail('info@sakamoto.com', providerEmail, "You got a service request", "Order requested", false, 'pendingOrdersProvider', dynamicJson);// this send the email from sendGrid   
+          });
+        }
+        else{// this send the email from sendGrid          
+          //        fromEmail,       toEmail,         subjectString,           sendingFunction,   booleanIfToAdmin, templateId,   JSON
+          dynamicEmail('info@sakamoto.com', fullMember.email, "Order confirmed!", "Order confirmed", true, 'service', dynamicJson);
+          getProviderEmail(serviceId).then( providerEmail => {
+            dynamicEmail('info@sakamoto.com', providerEmail, "You got a service booked", "Order confirmed", false, 'service', dynamicJson);// this send the email from sendGrid   
+          });
+        } 
+        return 'reserved';  
+      })
+      .catch((err) => {
+        console.log(err, 'error');
+        return 'error';
+      });
+    } 
+    else {
+      return 'Service to be paid for booking';
+    }
+}
+
+function updateProviderCal(serviceId, providerId, deliveryDay, deliveryTime, orderId) {
+  console.log(serviceId, providerId, deliveryDay, deliveryTime, orderId, 'for provider data update');
+  // date is a string   
+  return wixData.get('Providers', providerId, options)
+  .then( async (provider) => {
+    if (provider.reservedCal) {
+      var reservedArray = provider.reservedCal;
+    } else { reservedArray = []}
+    let availablePerSlot = provider.availablePerSlot;
+    if (reservedArray.length > 0) {
+      var updatedReservedArray = await checkArrayAndUpdate(reservedArray, deliveryDay, availablePerSlot, deliveryTime, orderId) // get the service updated with the reservation to update in the collection
+    }
+    else {
+      updatedReservedArray = await noReservationSoFar(reservedArray, deliveryDay, deliveryTime, orderId);
+    } 
+    console.log(updatedReservedArray, 'array updated and ready to save the collection for provider');
+    const sorted = updatedReservedArray.sort((a,b) => (Date.parse(a.date) > Date.parse(b.date)) ? 1 : ((Date.parse(b.date) > Date.parse(a.date)) ? -1 : 0));
+    provider.reservedCal = sorted;
+    return wixData.update("Providers", provider, options) // update the cal in the service item of the collection
+    .then ( (updated) => {
+      console.log('update the provider cal', updated);
+      return 'updated;'
+    })  
+  })
+  .catch( (err) => {
+    let errorMsg = err;
+    return 'error';
+  } );
+}
+
+
+// export function testUpdateCal () {
+//  let serviceId = "95fdceeb-5721-491c-9304-4a18a28cedc3";
+//  let deliveryDay = "Sat January 1 2022 14:00:00 GMT+0000 (Coordinated Universal Time)"; 
+//  let deliveryTime = "13:00"; 
+//  let orderId = "test2";
+//  return updateReservedCal(serviceId, deliveryDay, deliveryTime, orderId) 
+// }
+
+
+function updateReservedCal(serviceId, deliveryDay, deliveryTime, orderId) {
+  console.log(serviceId, deliveryDay, deliveryTime, orderId, 'for service data update');
+  // date is a string
+  return wixData.get('Services', serviceId, options)
+  .then( async (service) => {
+    if (service?.reserved) {
+      var reservedArray = service.reserved;
+    } else { reservedArray = []}
+    let availablePerSlot = service.availablePerSlot;
+    if (reservedArray.length > 0) {
+      var updatedReservedArray = await checkArrayAndUpdate(reservedArray, deliveryDay, availablePerSlot, deliveryTime, orderId) // get the service updated with the reservation to update in the collection
+    }
+    else {
+      updatedReservedArray = await noReservationSoFar(reservedArray, deliveryDay, deliveryTime, orderId); 
+    } 
+    //console.log(updatedReservedArray, 'array updated and ready to save the collection');
+    const sorted = updatedReservedArray.sort((a,b) => (Date.parse(a.date) > Date.parse(b.date)) ? 1 : ((Date.parse(b.date) > Date.parse(a.date)) ? -1 : 0));
+    service.reserved = sorted;
+    return wixData.update("Services", service, options) // update the cal in the service item of the collection
+    .then ( (updated) => {
+      console.log('update the service', updated);
+      return 'updated;'
+    })  
+  })
+  .catch( (err) => {
+    let errorMsg = err;
+    return 'error';
+  } );
+}
+
+//   {
+//     "date": "Fri Jul 30 2021 14:00:00 GMT+0000 (Coordinated Universal Time)",
+//     "dateCompare": "2021630",
+//     "slot": [
+//       {
+//         "booked": 9,
+//         "_id": "1627682400000",
+//         "order": [
+//           "54aa66b4-3716-4969-a0dd-a2d51e7430b1"
+//         ],
+//         "dayTimeMs": 1627646400000,
+//         "time": "12:00"
+//       }
+//     ],
+//     "bookedTotalDay": 9
+//   }
+
+// ALERT ALERT ALERT check if available per slot are enough but this should be already checked before taking the order
+function checkArrayAndUpdate (reservedArray, deliveryDay, availablePerSlot, deliveryTime, orderId) {
+  //console.log('case with already reserved slots for this service');
+  let dateMs = Date.parse(deliveryDay); // should be ms
+  let deliveryDate = new Date(dateMs);
+  let hoursArray = deliveryTime.split(':',2);
+  let hour = Number(hoursArray[0]); // get hour string in to number
+  deliveryDate.setHours(hour); //set hour
+  deliveryDate.setMinutes(0);
+  let deliveryCompare = deliveryDate.getFullYear().toString() + deliveryDate.getMonth().toString() + deliveryDate.getDate().toString(); 
+  //console.log(dateMs, typeof dateMs, 'here parsed date in ms');
+  let msString = deliveryDate.getTime().toString(); // get ms and then string
+  // step 1 check if any of the slots is for the deliveryday
+  let p1 = new Promise( (resolve, reject) => {
+    let index = reservedArray.findIndex( x => x.dateCompare === deliveryCompare);
+    if(index === -1) { //console.log('case date NOT found slotObj for this date, we have reservation but NOT for this day');
+        //we have to push a new slotObj for this date
+        let dayBooked = {
+          "date": deliveryDate.toDateString(),
+          'dateCompare': deliveryCompare,
+          "slot": [
+            {
+            "_id": msString, // id milliseconds dates
+            "time": deliveryTime,
+            "booked": 1,
+            'dayTimeMs': deliveryDate.getTime(),
+            'order': [orderId] // not sure why I add it an array. the order id should be just one
+            }
+          ],
+          "bookedTotalDay": 1
+        }
+        reservedArray.push(dayBooked);
+        const sorted = reservedArray.sort((a,b) => (Date.parse(a.date) > Date.parse(b.date)) ? 1 : ((Date.parse(b.date) > Date.parse(a.date)) ? -1 : 0));
+        resolve(sorted);
+    }
+    else { // case we have already this date in the reserved date so we need just to update the obj.slot for this day adding this service
+      console.log('we need to push a new obj because no slot for this time already');
+      let objToPush = {
+        "_id": msString, // id milliseconds dates
+        "time": deliveryTime,
+        "booked": 1,
+        'dayTimeMs': deliveryDate.getTime(),
+        'order': [orderId] // not sure why I add it an array. the order id should be just one
+      }
+      //console.log(objToPush, 'obj to push');
+      reservedArray[index].slot.push(objToPush); // push in the array in to slotArray
+      reservedArray[index].bookedTotalDay = reservedArray[index].slot.length; 
+      const sorted = reservedArray[index].slot.sort((a,b) => (a.dayTimeMs > b.dayTimeMs) ? 1 : (b.dayTimeMs > a.dayTimeMs) ? -1 : 0 );
+      reservedArray[index].slot = sorted;
+      //console.log(reservedArray, 'reserved array after pushing new slot')
+      resolve(reservedArray);
+    }
+  });
+  return p1.then( (reservedUpdated) => {
+    console.log(reservedUpdated, 'array in promise solved');
+    return reservedUpdated;
+  })
+}
+
+// // ALERT ALERT ALERT check if available per slot are enough
+// function checkArrayAndUpdate (reservedArray, deliveryDay, availablePerSlot, deliveryTime, orderId) {
+//  //console.log('case with already reserved slots for this service');
+//  let dateMs = Date.parse(deliveryDay); // should be ms
+//  let deliveryDate = new Date(dateMs);
+//  let hoursArray = deliveryTime.split(':',2);
+//  let hour = Number(hoursArray[0]); // get hour string in to number
+//  deliveryDate.setHours(hour); //set hour
+//  deliveryDate.setMinutes(0);
+//  let deliveryCompare = deliveryDate.getFullYear().toString() + deliveryDate.getMonth().toString() + deliveryDate.getDate().toString(); 
+//  //console.log(dateMs, typeof dateMs, 'here parsed date in ms')
+//  let counter = 0;
+//  let bookedSlots = reservedArray.length;
+//  // step 1 check if any of the slots is for the deliveryday
+//  let p1 = new Promise( (resolve, reject) => {
+//    reservedArray.forEach( (reservedDay, index)=> { // array of obj; each obj is  day booked
+//      let result;
+//      let thisDate = reservedDay.dateCompare;
+//      counter++;  
+//      if (thisDate === deliveryCompare) {
+//        //console.log(thisDate === deliveryCompare, thisDate, deliveryCompare, 'bingo we got a slot reserved for this date');
+//        // we need to find the index of the Obj for time we need to set in the Slot array contained 
+//        let indexSlot = reservedDay.slot.findIndex(x => x.time === deliveryTime); // the slot array of reservedDay obj contained in the reservedArray
+//        //console.log(indexSlot, 'index');
+//        if (indexSlot === -1) {// no reservation already on this day
+//          console.log('we need to push a new obj because no slot for this time already');
+//          var msString = deliveryDate.getTime().toString(); // get ms and then string
+//          let objToPush = {
+//            "_id": msString, // id milliseconds dates
+//            "time": deliveryTime,
+//            "booked": 1,
+//            'dayTimeMs': deliveryDate.getTime(),
+//            'order': [orderId] // we could have more than 1 slot sold same service, day and delivery time
+//          }
+//          //console.log(objToPush, 'obj to push');
+//          reservedArray[index].slot.push(objToPush); // push in the array in to slotArray
+//          // here you could sort the slotArray
+//          reservedArray[index].bookedTotalDay = reservedArray[index].bookedTotalDay + 1; //set to  1 booked for the day
+//          //console.log(reservedArray, 'reserved array after pushing new slot')
+//          counter--; // to avoid to get to the step below if any match of booking found
+//          resolve(reservedArray);
+//        } 
+//        else {
+//          //console.log('case we have already a reservation for this day and time', indexSlot, reservedArray[index].slot[indexSlot], 'indexSlot, reservedArray[index].slot[indexSlot]' );
+//          reservedArray[index].slot[indexSlot].order.push(orderId);
+//          //reservedArray[index].bookedTotalDay = reservedArray[index].bookedTotalDay + 1;
+//          //reservedArray[index].slot[indexSlot].booked = reservedArray[index].slot[indexSlot].booked + 1;
+//          reservedArray[index].bookedTotalDay++;
+//          reservedArray[index].slot[indexSlot].booked++;
+//          counter--; // to avoid to get to the step below if any match of booking found
+//          resolve(reservedArray);
+//        } 
+//      }
+//      else if (counter === bookedSlots) {
+//        //console.log('case date NOT found slotObj for this date, we have reservation but NOT for this day');
+//        //we have to push a new slotObj for this date
+//        let dayBooked = {
+//        "date": deliveryDate.toDateString(),
+//        'dateCompare': deliveryCompare,
+//        "slot": [
+//          {
+//          "_id": msString, // id milliseconds dates
+//          "time": deliveryTime,
+//          "booked": 1,
+//          'dayTimeMs': deliveryDate.getTime(),
+//          'order': [orderId] // we could have more than 1 slot sold same service, day and delivery time
+//          }
+//        ],
+//        "bookedTotalDay": 1
+//      }
+//        reservedArray.push(dayBooked);
+//        resolve(reservedArray);
+//      } 
+//    });
+//  });
+
+//  return p1.then( (reservedUpdated) => {
+//    console.log(reservedUpdated, 'array in promise solved');
+//    return reservedUpdated;
+//  })
+// }
+
+
+function noReservationSoFar (reservedArray, deliveryDay, deliveryTime, orderId) {
+  let dateMs = Date.parse(deliveryDay); // should be ms
+  let date = new Date(dateMs)
+  //console.log('case no reserved yet for this service', date);
+  let hoursArray = deliveryTime.split(':',2);
+  let hour = Number(hoursArray[0]); // get hour string in to number
+  date.setHours(hour); //set hour
+  date.setMinutes(0);
+  let deliverytimeMs = date.getTime();
+  //console.log(date, 'date with hours then slotTime in ms', deliverytimeMs)
+  var msString = dateMs.toString(); // get ms and then string
+  //console.log(msString, 'again date in ms but string');
+  date.setHours(14);
+  date.setMinutes(0);
+  let dateString = date.toString();
+  //console.log(date, dateString, 'date14, dateString')
+  let toCompareDate = date.getFullYear().toString() + date.getMonth().toString() + date.getDate().toString(); 
+  let dayBooked = {
+      "date": dateString,
+      'dateCompare': toCompareDate,
+      "slot": [
+        {
+        "_id": msString, // id milliseconds dates
+        "time": deliveryTime,
+        "booked": 1,
+        'dayTimeMs': deliverytimeMs,
+        'order': [orderId]
+        }
+      ],
+      "bookedTotalDay": 1
+    }
+  reservedArray.push(dayBooked);
+  console.log(reservedArray, 'reservedArray before returning for update collection' )
+  return reservedArray;
+}
+
+// export async function test () {
+//  const key = await getStripeKey(); // LIVE
+//  //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+//  const stripe = await new Stripe(key);
+//  //"pi_3KKdVeFtE55Gpo7d1N8z7jYy"
+//  const balanceTransaction = await stripe.balanceTransactions.retrieve(
+//    "txn_3KT05VFtE55Gpo7d0Ttppv44", // transactionId
+//    {
+//      stripeAccount: "acct_1GgB0qFtE55Gpo7d", // "{{CONNECTED_STRIPE_ACCOUNT_ID}}"
+//    }
+//  );
+//  console.log(balanceTransaction)
+// }
+
+// ALERT I COULD USE CHARGE OR THE BALANCE TRANSACTION ... now susing both
+async function insertPaymentService(serviceId, response, fullMember, bookingId, address) { // response === intentResponse
+  const memberId = fullMember.memberId;
+  const serviceData = await serviceObj(serviceId); //get the data about the offer
+  const key = await getStripeKey(); // LIVE
+  //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+  const stripe = await new Stripe(key);
+  const balanceTransactionId = response.charges.data[0].balance_transaction; //grab the balanceTransactioId to search line 147 the balance transaction
+  const hedoFee = response.charges.data[0].application_fee_amount;
+  console.log(response, 'response');
+  // then retrieve this balance transaction
+  const providerFullData = serviceData.provider;
+  //console.log(ownerFullData, 'ownerfullData');
+  const providerStripeAccountId = serviceData.provider.stripeId;
+  const balanceTransaction = await stripe.balanceTransactions.retrieve(
+    balanceTransactionId, // transactionId
+    {
+      stripeAccount: providerStripeAccountId, // "{{CONNECTED_STRIPE_ACCOUNT_ID}}"
+    }
+  );
+  if (!balanceTransaction) {
+    var notCentsStripeFees = 0;
+    var notCentsOurFee = 0;
+  } else {
+    const fee0 = balanceTransaction.fee_details[0]; // fuck the hell these asshole change the order in the array
+    const fee1 = balanceTransaction.fee_details[1];
+    //it seems we found Stripe to change the order of their fee and our fee; sounds weaird but in case we got protected catching the difference
+    var stripeFees = 0;
+    if (fee0.type === "stripe_fee") { // type "application_fee" is for Hedo fee
+      stripeFees = fee0.amount;
+    } else if (fee1.type === "stripe_fee") {
+      stripeFees = fee1.amount;
+    }
+    notCentsStripeFees = stripeFees / 100;
+    notCentsOurFee = hedoFee / 100;
+  }
+  const charge = response.charges.data[0];
+  const metadata = charge.metadata;
+  //console.log(metadata, 'metadata from charge in backend');
+  const totalPaid = Number(response.amount_received) / 100;
+  //const stripeFee = response.
+  var applicationFee = Number(charge.application_fee_amount) / 100;
+  if (notCentsOurFee < applicationFee) { // let's check if we have been charged with commission; in that case let's take the net paid to us
+    applicationFee = notCentsOurFee;
+  }
+  var  providerPaid = totalPaid - applicationFee;
+  if (providerPaid < 0) { // if the owner got no payment but just the fees charged
+    providerPaid = 0 + notCentsStripeFees;
+  }
+  const providerNetPaid = Math.round((providerPaid - notCentsStripeFees)*100)/100;
+  const description = response.description;
+  const plusVatCommission = serviceData.plusVatCommission;
+  const lastFour = charge.payment_method_details.card.last4;
+
+// insert order
+  const orderId = await insertOrder(serviceId, fullMember, metadata, serviceData.provider._id, serviceData.price, bookingId, address); //isConfirmedByProvider
+  console.log(orderId, 'orderId returned before inserting payment');
+  let totalNetPaid = Math.round((totalPaid - notCentsStripeFees)*100)/100;
+  let toInsert = {
+    'title': serviceData.title,
+    'fullResponse': response,
+    'booking': null,
+    'service': serviceId,
+    'order': orderId,
+    'paymentId': response.id,
+    'paymentMethodId': response.payment_method,
+    // the charge array contains the charge OBJ at position [0]
+    'chargeObj': charge,
+    'balanceTransactionObj': balanceTransaction,
+    'totalGrossPaid': totalPaid,
+    'totalNetPaid': totalNetPaid, // totalNet paid after Stripe fees
+    'paymentFee': applicationFee, // total agentFee and it includes VAT but it doesn't include stripe fee because paid by owner                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+    //'totalNetPaid': response.xxxx, need the stripe fee to calculate it
+    'note': description,
+    'payer': charge.billing_details,
+    'metadata': metadata,
+    'cardLastFour': lastFour,
+    'payerCountry': charge.payment_method_details.card.country,
+    'agent': null,
+    'owner': null,
+    'provider': serviceData.provider._id,
+    'providerGross': Math.round(providerPaid*100)/100,
+    'providerNet': providerNetPaid,
+    'coAgent': null,
+    'connectedAccount': response.application, // connected account where this payment was sent to
+    'payDate': new Date(),
+    'member': memberId,
+    'stripeFee': notCentsStripeFees,
+    'payMethod': 'Card ****' + lastFour,
+    'payWhat': 'service', // damage, booking, service, checkin ...... 4 kind of payment reason
+  };
+  //console.log(toInsert, 'OBJ to insert in Payments collection');
+  return wixData.insert("Payments", toInsert, options)
+    .then(async (results) => {
+      //console.log(results, 'payment created after booking created');
+      const payment = results; //see item below
+      const paymentId = payment._id;
+      //console.log(paymentId, 'now we got also the paymentId and go for the invoiceId');
+      // send email
+      sendEmailService(metadata, serviceId, serviceData.mainPic); 
+      const invoiceId = await serviceInvoice(paymentId, serviceId, applicationFee, description, metadata);
+      const payInvoiceIds = {
+        'paymentId': paymentId,
+        'invoiceId': invoiceId
+      }
+      return payInvoiceIds;
+    })
+    .catch((err) => {
+      let errorMsg = err;
+    });
+}
+
+import {getLastInvoice} from 'backend/stripeElements';
+
+export async function serviceInvoice(paymentId, serviceId, applicationFee, description, metadata, plusVatCommission) { // we do not add number and date and that will be created automatically on date or manually
+  //console.log('running invoice create with applicationFee, vatOncommission,', applicationFee);
+  let today = new Date();
+  const lastInvoiceNum = await getLastInvoice();
+  const thisInvoice = Number(lastInvoiceNum + 1);
+  var pending = null;
+  var invoiceDate = today;
+  var invoiceNumber = thisInvoice;
+  const vatOncommission = 21;
+  var taxable = Number(applicationFee / (100 + vatOncommission) * 100);
+  //console.log(taxable, 'taxable before toFixed(2)')
+  let taxableAmountString = taxable.toFixed(2);
+  //console.log(taxableAmountString, typeof taxableAmountString)
+  taxable = parseFloat(taxableAmountString); //back to number
+  //console.log(taxable, 'taxable back to number and typeof', typeof taxable);
+  var vatAmount = Number(applicationFee - taxable);
+  let toInsert = {
+    'title': thisInvoice.toString(),
+    'contract': null,
+    'payment': paymentId,
+    'totalSum': applicationFee, // total agentFee and it includes VAT but it doesn't include stripe fee because paid by owner  
+    'taxable': taxable,
+    'vatPerc': vatOncommission,
+    'vatAmount': vatAmount,
+    'pending': pending,
+    'invoiceDate': invoiceDate,
+    'description': description,
+    'payer': metadata,
+    'invoiceNumber': thisInvoice,
+    'service': serviceId,
+  };
+  return wixData.insert("Invoices", toInsert, options)
+    .then(async (results) => {
+      //console.log(results, 'invoice created after payment created');
+      const invoice = results; //see item below
+      const invoiceId = invoice._id;
+      return invoiceId;
+    })
+    .catch((err) => {
+      let errorMsg = err;
+    });
+}
+
+const optionsDateEmail = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+
+
+async function sendEmailService (metadata, serviceId, pic) {
+  console.log('metadata in the email', metadata);
+  //console.log(metadata.upgrades, 'metadata.upgrades and typeof', typeof metadata.upgrades);
+  let upgrades = JSON.parse(metadata.upgrades);
+  console.log(upgrades, typeof upgrades, ' BEFORE to JSON.parse');
+  let remainder = Number(metadata.totalPrice - metadata.upfrontPaid);
+  const picConverted = await getFullImageURL(pic);
+  let dynamicJson = {
+    name: metadata.customer,
+    serviceName: metadata.service,
+    quantity: metadata.quantity.toString(),
+    upgrades: upgrades,
+    totalPrice: metadata.totalPrice.toString(),
+    paid: metadata.upfrontPaid.toString(),
+    remainder: remainder.toString(),
+    deliveryDay: metadata.deliveryDay,
+    deliveryTime: metadata.deliveryTime,
+    pic: picConverted
+  }
+  console.log(metadata.email, dynamicJson, 'email, dynamicJson');
+  dynamicEmail('info@sakamoto.com', metadata.email, "You added on a service!", "Order confirmed", true, 'service', dynamicJson); // this send the email from sendGrid  
+  getProviderEmail(serviceId).then( providerEmail => {
+    dynamicEmail('info@sakamoto.com', providerEmail, "You got booked a service!", "Order confirmed", false, 'service', dynamicJson); // this send the email from sendGrid   
+  });
+    //        fromEmail,       toEmail,         subjectString,           sendingFunction,   booleanIfToAdmin, templateId,   JSON
+}
+
+function getProviderEmail (serviceId) {
+  return wixData.query('Services')
+  .eq('_id', serviceId)
+  .include('provider')
+  .find(options)
+  .then(results => {
+    return  results.items[0].provider.email;
+  });
+}
+
+
+import {member} from 'backend/bookings.jsw';
+
+
+export async function findOrders (isPaidBool) {
+  const memberData = await member();
+  const memberId = memberData._id;
+  const todayMs = (new Date()).getTime();
+  const lastWeek = new Date(todayMs-6.048e+8)
+  return wixData.query('Orders')
+  .eq('member', memberId)
+  .ge('deliveryDateFomat', lastWeek)
+  //.ne('delivered', true)
+  //.eq('isConfirmedByProvider', confirmedByProviderBool)
+  .eq('isPaid', isPaidBool)
+  .include('service')
+  .ascending('deliveryDateFomat')
+  .find(options)
+  .then (async (result) => {
+    if (result.items.length > 0) {
+      //console.log(result, result.items, 'result, result.items');
+      let mapped = await mapOrder(result.items);
+      return mapped;
+    } 
+    else { 
+      console.log('no orders')
+      return []
+    } 
+  });
+}
+
+export async function findOrdersTest (isPaidBool) {
+  const memberId = "3a299a21-2a96-42c8-b279-f37487bc51fa";
+  const todayMs = (new Date()).getTime();
+  const lastWeek = new Date(todayMs-6.048e+8)
+  return wixData.query('Orders')
+  .eq('member', memberId)
+  .ge('deliveryDateFomat', lastWeek)
+  //.ne('delivered', true)
+  //.eq('isConfirmedByProvider', confirmedByProviderBool)
+  .eq('isPaid', isPaidBool)
+  .include('service')
+  .ascending('deliveryDateFomat')
+  .find(options)
+  .then (async (result) => {
+    if (result.items.length > 0) {
+      //console.log(result, result.items, 'result, result.items');
+      let mapped = await mapOrder(result.items);
+      return mapped;
+    } 
+    else { 
+      console.log('no orders')
+      return []
+    } 
+  })
+}
+
+export async function findOrdersOneBooking (bookingId) {
+  const memberData = await member();
+  const memberId = memberData._id;
+  return wixData.query('Orders')
+  .eq('member', memberId)
+  .eq('booking', bookingId)
+  .include('service')
+  .find(options)
+  .then (async (result) => {
+    if (result.items.length > 0) {
+      //console.log(result, result.items, 'result, result.items');
+      let mapped = await mapOrder(result.items);
+      let mappedTransfer = await mapWithTransfer(mapped, bookingId)
+      return mappedTransfer;
+    } else { 
+      let mappedTransfer = await mapWithTransfer([], bookingId)
+      return mappedTransfer
+    } 
+  });
+}
+
+export function getPendingOrderSetup(orderId) {
+  return wixData.query('Orders').eq("_id", orderId).include('provider').include('member').limit(1).find(options).then( async (order) => {
+    console.log(order.items[0])
+    const {provider, service, extraService, deliveryDateFomat, deliveryTime, member, quantity, totalPrice, deliveryDate, title} = order.items[0];
+    console.log(provider, service, extraService, deliveryDateFomat, deliveryTime, member, quantity, totalPrice, deliveryDate, title)
+    const intentObj = {
+      serviceId: service, 
+      quantity: quantity,
+      extraArray: extraService, 
+      deliveryDate: deliveryDateFomat, 
+      deliveryTime: deliveryTime, 
+      cardHolder: "",
+      upfront: totalPrice,
+      email: member.title,
+      upfrontOrAll: 'all'
+    }
+    const intentId = await intent(intentObj);
+    return  {
+      client_secret: intentId,
+      connected: provider.stripeId,
+      bookingId: null, // pass serviceId in case of service
+      serviceId: service,
+      price: totalPrice, // we calculate the price backend so just pass a string to display
+      description: 'Service confirmation: ' + title,
+      reference: "Qty " + quantity + ' Delivered on ' + deliveryDate, 
+      paymentIntentId: intentId, 
+      connectedAccount: provider.stripeId, 
+      inTime: null, 
+      outTime: null, 
+      payWhat: "Service",
+      cardHolder: "",
+      gotError: false
+    }
+  })
+  .catch(err => {return {gotError: true} });
+}
+// luggageBack: 13
+// airportBack: "Malaga"
+// date: "2022-05-04T11:00:00.000Z"
+// memberId: "42ea4a89-fd79-46ce-928a-4341d17e4091"
+// villaName: "Barbara"
+// flightBack: "6054"
+// luggage: 13
+// dateBack: "2022-05-08T11:00:00.000Z"
+// amountPaid: 22.6
+
+function mapWithTransfer (mapped, bookingId) {
+  return wixData.query('transferBookedIntent').eq('bookingId', bookingId).find(options).then( async results => {
+    console.log(results.items)
+    if(results.totalCount > 0) { 
+      let withTransfer = await addTransferToService(results.items, mapped).then( final => final);
+      return withTransfer;
+    }
+    else {
+      return mapped;
+    }
+  });
+}
+
+function addTransferToService (transferArray, mapped) {
+  let added = new Promise( (resolve, reject) => {
+    transferArray.forEach( (order, index) => {
+      if(order.isBooked === true) {
+        let type = 'Round Trip';
+        let string = 'Total guests ' + order.passengers + ', type: ' + type + ', Luggage ' + order.luggage;
+        if(order.selectedWay !== 'OneWay') {type = 'One Way'; string = string + '\n Amend the trip back with the provider upon arrival if needed';}
+        let qty=1;
+        if(order.selectedWay === 'round') {qty=2;}
+        let data = {
+          _id: order._id,
+          title: order.airport + ' airport transfer', 
+          serviceId: order._id,
+          quantity: qty.toString(),
+          unitPrice: (order.priceToCharge/2).toFixed(2),
+          totalPrice: order.priceToCharge.toString(),
+          // noteProvider: order.noteProvider,
+          // noteCustomer: order.noteCustomer,
+          provider: order.provider,
+          extras: string,
+          cashUponArrival: order.cashUponArrival,
+          deliveryDate: order.date, 
+          deliveryTime: 'Flight: ' + order.flight,
+          totalExtra: 0,
+          orderPic: 'https://static.wixstatic.com/media/9dd990_032d6dce2a0646239c21a498c7465c10~mv2.jpg',
+          isTransfer: true,
+          paymentObj: order.paymentObj
+        }
+        const date = Date.parse(order._createdDate);
+        data.paymentObj.payment = 'Transfer';
+        data.paymentObj.charged = order.priceToCharge;
+        data.paymentObj.payDate = new Date(date);
+        data.paymentObj.agentPayment = order.feePaid;
+        data.paymentObj.payMethod = 'Card****'; // add the card number to the payObj in transfer if you want to get it
+        data.paymentObj.payWhat = 'Transfer';
+        data.paymentObj._id = order._id;
+        data.paymentObj.totalGrossPaid = +data.paymentObj.amountPaid; 
+        mapped.push(data);
+      }
+      if(transferArray.length === index+1) {resolve(mapped);}
+    }); 
+  });
+  return added.then( final => final)
+}
+
+export function mapOrder(orders) {
+  return orders.map( (order) => {
+    let {extraService=[]} = order;
+    let data = {
+      _id: order._id,
+      title: order.title, 
+      serviceId: order.service._id,
+      quantity: order.quantity,
+      unitPrice: order.unitPrice,
+      totalPrice: order.totalPrice,
+      noteProvider: order.noteProvider,
+      noteCustomer: order.noteCustomer,
+      provider: order.provider,
+      extraService: extraService,
+      cashUponArrival: order.cashUponArrival,
+      deliveryDate: order.deliveryDate,
+      deliveryDateFomat: order.deliveryDateFomat,
+      deliveryTime: order.deliveryTime,
+      totalExtra: order.totalExtra,
+      orderPic: order.service.mainPic,
+      isTransfer: false,
+      isConfirmedByProvider: order.isConfirmedByProvider,
+      isPaid: order.isPaid
+    }
+    return data;
+  });
+}
+
+export function searchIfBooking (selectedDate)  {
+  console.log('searching for selected date', selectedDate);
+  return getMyFullMember().then (fullMember => {
+    return wixData.query('Contracts')
+    .eq('member', fullMember.memberId)
+    .le('checkIn', selectedDate)
+    .ge('checkOut', selectedDate)
+    .include('villa')
+    .find(options)
+    .then( bookings => {
+      if(bookings.totalCount > 0) {
+        return bookings.items.map( (contract) => {
+          let {mainPic, checkIn, checkOut, villa} = contract;
+          return {
+            _id: contract._id,
+            // reference: contract.title,
+            checkin: checkIn,
+            villa: villa.title,
+            address: villa.address
+            // pic: mainPic
+          };
+        } ); 
+      }
+      else {
+        return [];
+      }
+    })
+  });
+} 
+
+export async function poolCheck() {
+  const memberData = await member();
+  if(memberData._id !== "notLoggedIn") {
+    const memberId = memberData._id;
+    const bookingsResults = await wixData.query('Contracts').eq('member', memberId).ge('checkIn', new Date()).include('villa').find(options);
+    if(bookingsResults.totalCount > 0) {
+      const data = bookingsResults.items;
+      const mapped = await data.map( contract => {
+        const isHeatedCheck = contract.villa.tagsFeatures.findIndex(x => x === "heated");
+        let heatedBool = null;
+        isHeatedCheck !== -1 ? heatedBool = true : heatedBool = false;
+        return {
+          _id: contract._id,
+          villa: contract.villa.title,
+          isHeated: heatedBool,
+          heatedCost: contract.villa.poolHeating,
+          villaId: undefined,
+          address: contract.villa.address
+        }
+      });
+      return {
+        bookings: mapped.length,
+        bookingsArray: mapped,
+        loggedIn: true
+      }
+    }
+    return {
+      bookings: 0,
+      bookingsArray: [],
+      loggedIn: true
+    }
+  }
+  else {
+    return {
+      bookings: 0,
+      bookingsArray: [],
+      loggedIn: false
+    }
+  }
+}
+
+export async function checkIfLogged () {
+  const memberData = await member();
+  if(memberData._id !== "notLoggedIn") {
+     return 'logged';
+  }
+  return 'notLogged';
+}
+
+
+ // export function get () {
+//  wixData.query('Villas').limit(5).find(options).then( villasRes => console.log(villasRes.items))
+// }
+
+// export async function markAllConfirmed () {
+//  wixData.query('Orders').limit(1000).find(options).then( results => {
+//    console.log(results.items, results.totalCount)
+//    results.items.forEach( order => {
+//      order.isPaid = true;
+//      console.log(order)
+//      wixData.update('Orders', order, options).catch(err => {console.log(err);})
+//    })
+//  })
+// }

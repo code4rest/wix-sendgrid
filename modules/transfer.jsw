@@ -1,0 +1,620 @@
+import wixData from 'wix-data';
+import {getMyFullMember} from 'backend/leaders';
+
+// let memberId = await getMyMember();
+
+var options = {
+"suppressAuth": true,
+};
+
+export async function transferChangeGuests (dataArray) { // dataArray = [transferZone, guestsNum]
+    let transferObj = await getTransferObj(dataArray);
+    transferObj.villaName = dataArray[2];
+    return transferObj;
+}
+
+export function getTransfer(bookingId) {
+    console.log(bookingId, 'bookingId to start with');
+    return getMyFullMember().then(async member => {
+        // console.log(member)
+        if (!bookingId) {
+            var mappedBookings = await getBookings(member);
+        }
+        else{ // we have 1 booking id
+            mappedBookings = await getOneBooking(member, bookingId);
+        }
+        // console.log(mappedBookings, 'mapped bookings')
+        if(mappedBookings.length === 1) {
+            // console.log('case booking only 1 length', mappedBookings);
+            if(mappedBookings[0]._id === ('error' || null)) { 
+                console.log('case booking id null or error', mappedBookings[0]._id);
+                return {bookings: null, transfer:null} 
+            }
+            else {
+                console.log('case we 1 have booking to go along with');
+                const transferNeeds = {
+                    transferZone: mappedBookings[0].transferArea, 
+                    guestNumber: mappedBookings[0].guestNumber
+                }
+                const transfers = await getTransferObj(transferNeeds);
+                    console.log(transfers, 'transfer founds');
+                return  {
+                    bookings: mappedBookings,
+                    transfers: transfers
+                }
+            }
+        }
+        else if (mappedBookings.length > 1) {return {bookings: mappedBookings, transfers:null}}
+        })
+}
+
+
+export function getTransferObj(transferNeeds) {
+    // console.log(transferNeeds, 'start to find a transfer');
+    const {transferZone, guestNumber} = transferNeeds; 
+    // console.log( typeof transferZone, transferZone, guestNumber, typeof guestNumber, 'start to find a transfer');
+    return wixData.query('Transfer')
+    .eq('transferZone', transferZone)
+    .ge('limit', guestNumber)
+    .eq('isApproved', true)
+    .include('provider')
+    .find(options)
+    .then( (transfers) => {
+        // console.log(transfers, 'transfer to map');
+        return mapTransfer(transfers.items).then( mappedTransfer => {
+            //console.log(mappedTransfer, 'transfer mapped');
+            return mappedTransfer;
+        });
+    })
+}
+
+function mapTransfer (transfers) {
+    let mapped = transfers.map( (transfer, index) => {
+        // console.log(transfer, 'each in loop')
+        return{
+            _id: index.toString(),
+            vehicle: transfer.title,
+            providerName: transfer.provider.title,
+            providerPic: transfer.provider.providerPic,
+            limit: transfer.limit,
+            transferZone: transfer.transferZone,
+            price: transfer.price,
+            pic: transfer.pic,
+            transferId: transfer._id,
+            providerId: transfer.provider._id
+        }
+    });
+    let p1 = new Promise( (resolve, reject) => {
+        resolve(mapped); 
+    });
+    return p1.then( final => {return final} )
+}
+
+function getOneBooking (member, bookingId) {
+    let baseObj = {
+        _id:null,
+        villa: null,
+        checkin: null,
+        checkout: null,
+        guestNumber: null,
+        transferArea: null
+    }
+    return wixData.query('Contracts')
+    .eq('member', member.memberId)
+    .eq('_id', bookingId)
+    .include('villa')
+    .find(options)
+    .then( results => {
+        if (results.totalCount > 0) {return mapBookings(results.items);} else{return baseObj;}
+    })
+    .catch((err) => {
+        console.log(err, 'errorMsg');
+        baseObj._id = 'error';
+        return [baseObj];
+    }); 
+}
+
+function mapBookings (bookings) {
+    if (bookings.length > 0) {
+        return bookings.map( each => {
+            return {
+                _id: each._id,
+                villa: each.villa.title,
+                checkin: each.checkIn,
+                checkout: each.checkOut,
+                guestNumber: each.guestNumber,
+                transferArea: each.villa.transferArea
+            }
+        })
+    }
+}
+    
+
+function getBookings (member) {
+    let baseObj = {
+                    _id:null,
+                    villa: null,
+                    checkin: null,
+                    checkout: null,
+                    guestNumber: null,
+                    transferArea: null
+                }
+    let today = new Date();
+    today.setHours(12);
+    return wixData.query('Contracts')
+    .eq('member', member.memberId)
+    .ne('deleted', true)
+    .gt('checkIn', today)
+    .include('villa')
+    .find(options)
+    .then( results => {
+        // console.log(results, results.totalCount, 'response for getBooking');
+        if (results.totalCount > 0) {
+            return results.items.map( each => {
+                return {
+                    _id: each._id,
+                    villa: each.villa.title,
+                    checkin: each.checkIn,
+                    checkout: each.checkOut,
+                    guestNumber: each.guestNumber,
+                    transferArea: each.villa.transferArea
+                }
+            })
+        }
+        else {return [baseObj];
+        }
+    })
+    .catch((err) => {
+        console.log(err, 'errorMsg');
+        baseObj._id = 'error';
+        return [baseObj];
+    }); 
+}                       
+    
+
+import { Stripe } from 'stripe';
+import { getStripeKey } from 'backend/secrets.js';
+
+async function transfertIntent (transferObj) {
+    console.log(transferObj, 'passed to transferIntent');
+    let {amountCents, feeCents, connectedAccountId, totalPrice} = transferObj.transferWithDataForIntent;
+    console.log(amountCents, feeCents, connectedAccountId, 'amountCents, feeCents, connectedAccountId');
+    // now send the payment intent
+    const metadataObj = {
+            "service": 'Transfer',
+            'transferId': transferObj.userEmail,
+            'providerId': transferObj.transferId,
+            'memberId': transferObj.memberId,
+            'totalCents': (totalPrice*100),
+            'paidAmount': amountCents,  
+            'feeCents': feeCents
+        }
+    // const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+    const key = await getStripeKey(); // LIVE
+    const stripe = await new Stripe(key);
+    // Create the PaymentIntent
+    const paymentIntent = await stripe.paymentIntents.create({
+        payment_method_options: {
+            "card": {
+            "request_three_d_secure": "automatic"  // any to use the 3d for all the payments or automatic if the system decide
+            }
+        },
+        payment_method_types: ['card'],
+        amount: amountCents,
+        currency: 'eur',
+        description: 'Transfer service',
+        receipt_email: transferObj.userEmail,
+        metadata: metadataObj,
+        application_fee_amount: feeCents // we grab it from backned as we did from booking
+    }, {
+        stripeAccount: connectedAccountId, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+    });
+    console.log(paymentIntent, 'full intent backend');
+    const paymentSecretClient = paymentIntent.client_secret;
+    if (paymentSecretClient) {
+        let response = {
+            connected: connectedAccountId,
+            client_secret: paymentSecretClient
+        }
+        return response;
+    }
+    else {
+        return 'no payment intent';
+    }
+}
+
+function serviceObj (transferId) {
+    return wixData.query('Transfer')
+    .eq('_id', transferId)
+    .eq('isApproved', true)
+    .include('provider')
+    .find(options)
+    .then ((services) => {
+        console.log(services, services.items[0], 'services found for transferId ', transferId)
+        return services.items[0];       
+    })
+}
+
+export async function transferProviderAccountId (transferObj) {
+    let {transferId} = transferObj;
+    let service = await serviceObj (transferId);
+    console.log(service, 'service found')
+    let intentObj = {};
+    intentObj.connectedAccountId= service.provider.stripeId;
+    //console.log(service, 'serviceObj');
+    // if(transferObj.selectedWay === "oneWay") {var total = Number(service.price);} else {total = Number(service.price*2);}
+    let total = 0; 
+    transferObj.selectedWay === "oneWay" ? total = Number(service.price) : total = Number(service.price*2);
+    let feeCents = total*0.1*100;
+    if (transferObj.paymentSchedule === 'upFront') {
+        var amountToCharge = feeCents
+        var balance = ((total*100)-amountToCharge)/100;
+    }
+    else {
+        amountToCharge = total*100;
+        balance = 0;
+    }
+    intentObj = { ... intentObj,
+        totalPrice: total,
+        amountCents: Math.round(amountToCharge),
+        balance: balance*100,
+        feeCents: Math.round(feeCents)
+    }
+    console.log(intentObj, 'intentObj after check price backend and recalc and connectAccount');
+    // return [transferObj, intentObj];
+    return intentObj;
+}
+
+export function getOrderId (transferObj) {
+    console.log(transferObj, 'transferObj starting getOrderId');
+    const memberObj = new Promise( (resolve, reject) => {
+        resolve(getMyFullMember()); 
+    });
+    const transferObjRatesAccountId = new Promise( (resolve, reject) => {
+        resolve(transferProviderAccountId(transferObj)); 
+    });
+    return Promise.all([memberObj, transferObjRatesAccountId]).then((values) => {
+        console.log(values, 'values with member at [0]');
+        const {memberId, email, agent} = values[0]; // memberObj
+        transferObj = { ...transferObj,
+            memberId: memberId,
+            userEmail: email,
+            agent: agent,
+            transferWithDataForIntent: values[1] //transfer Data for IntentObj
+        }
+        const transferArrayWithIntent = new Promise( (resolve, reject) => {
+            resolve(transfertIntent(transferObj)); // cancel dates calendar
+        });
+        return transferArrayWithIntent.then( intentObj => {
+            //let's store a copy of this trasnfer order to grab if paid
+            console.log(intentObj, 'intent obj');
+            transferObj = { ... transferObj,
+                intentObj: intentObj
+            }
+            return wixData.insert('transferBookedIntent', transferObj, options)
+            .then( inserted => {
+                // return [inserted._id, intentObj];
+                return [inserted._id, 'inserted'];
+            })
+            })
+            .catch((err) => {
+                console.log(err, 'errorMsg');
+                return [err, 'error'];
+            }); 
+        })
+}
+
+export function getOrderObj (orderId) {
+    return wixData.get('transferBookedIntent', orderId, options)
+    .then( transferOrder => {return transferOrder});
+}
+
+// let dataObj = {
+//  orderId: orderId, 
+//  intentId: msgFromHTML.paymentIntent.id
+// }
+
+// intentObj: {...}
+// connected: "acct_1GgB0qFtE55Gpo7d"
+// client_secret: "pi_1ItsAyFtE55Gpo7dkuPrvlSA_secret_A9Am2GsLn4DPQN4x7LAd0w1ht"
+
+// "service": 'Transfer',
+// 'transferId': transferObj.userEmail,
+// 'providerId': transferObj.transferId,
+// 'memberId': transferObj.memberId,
+// 'totalCents': (totalPrice*100),
+// 'paidAmount': amountCents,   
+// 'feeCents': feeCents
+export function testTraferConfirmation () {
+    const dataObj = {
+        "orderId": "50369174-e8fe-45a3-88e9-62bb73dfa6d3", 
+        "intentId": "pi_3L5EZbCKPtrr1Q311tm1KtVR"
+    }
+    confirmationTransfer(dataObj);
+}
+
+export function confirmationTransfer (dataObj) {
+    return tryConfirmationTransfer(dataObj).then( resp => {
+        if(resp === 'paymentConfirmed' || resp === 'payment not succeded') {return resp;}
+        return tryConfirmationTransfer(dataObj).then( resp2 => {return resp;});
+    });
+}
+
+function tryConfirmationTransfer (dataObj) {
+    console.log('started with ', dataObj)
+    const {orderId, intentId} = dataObj;
+    const transferObj = new Promise( (resolve, reject) => {
+        resolve(getOrderObj(orderId)); 
+    });
+    return transferObj.then( transfer => {
+        console.log(transfer, 'transfer found to update');
+        const paymentObj = new Promise( (resolve, reject) => {
+            resolve( getPaymentStripe(intentId, transfer.intentObj.connected)); 
+        });
+        return paymentObj.then( paymentObj => {
+            if (paymentObj.status === "succeeded") {
+                console.log(paymentObj, 'paymentFound on stripe backend')
+                let {id, application_fee_amount, amount_received, metadata} = paymentObj;
+                let totalPriceToCharge = Number(metadata.totalCents)/100;
+                let feePaid = Number(application_fee_amount)/100;
+                let amountPaid = Number(amount_received)/100;
+                const payObj = {
+                    stripePaymentId: id,
+                    total: totalPriceToCharge,
+                    amountPaid: amountPaid,
+                    fee: feePaid
+                }
+                // not sure we get this right so better non blocking
+                //if(paymentObj.charge.payment_method_details.card.last4) {payObj.payMethod = 'Card ****' + paymentObj.charge.payment_method_details.card.last4}
+                transfer = { ...transfer,
+                    paymentObj: payObj,
+                    isIntent: null,
+                    isBooked: true,
+                    amountPaid: amountPaid,
+                    feePaid: feePaid
+                }
+                console.log(transfer, 'transfer after adding data', paymentObj);
+                return wixData.update('transferBookedIntent', transfer, options)
+                .then( transferUpdated => {
+                    // sendEmail
+                    sendEmailTransfer(transferUpdated._id, totalPriceToCharge, amountPaid);
+                    return 'paymentConfirmed';
+                })
+                .catch((err) => {
+                    console.log(err, 'errorMsg');
+                    return 'error';
+                }); 
+            } else {
+                return 'payment not succeded';
+            }
+        })
+        
+    })
+}
+
+
+async function getPaymentStripe (paymentIntentId, connectedAccount) {
+    // ALERT LIVE
+    const key = await getStripeKey(); // LIVE
+    //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+    const stripe = await new Stripe(key);
+    const intentResponse = await stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+        paymentIntentId, {
+            stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+        });
+    console.log(intentResponse, 'intent obj after payment confirmation');
+    if(!intentResponse.amount_received) {
+        const intentResponse = await stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+        paymentIntentId, {
+            stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+        });
+        return intentResponse;
+    }
+    return intentResponse;
+}
+
+import {dynamicEmail} from 'backend/sendGrid';
+
+// babySeatsBack: null
+// luggageBack: null
+// feePaid: 7.5
+// intentObj: {...}
+// flight: "BA0454"
+// priceToCharge: 75
+// _id: "71f895fe-949f-4b02-94e4-6c0ac5dbbc8f"
+// isIntent: null
+// _owner: "f75d61a9-a2d9-4a70-af75-151ec1b78923"
+// _createdDate: "2021-06-14T07:34:56.704Z"
+// needsBack: null
+// bookingId: "1f4389a4-2d80-40f8-9f42-cb9d8a27f6c3"
+// userEmail: "ayodelefx1@gmail.com"
+// transferId: "d2be4c5e-25a9-4d7d-8573-8f059dbea488"
+// _updatedDate: "2021-06-14T07:36:07.103Z"
+// paymentObj: {...}
+// agent: "de8ab612-3f47-4ef5-b739-eb4dd9d8a937"
+// transferWithDataForIntent: {...}
+// isBooked: true
+// airportBack: null
+// pickup: "airportPickup"
+// selectedWay: "oneWay"
+// date: "2021-06-14T11:00:00.000Z"
+// airport: "Malaga"
+// paymentSchedule: "upFront"
+// memberId: "368e3aef-9819-4053-b099-9d5333ce7bd5"
+// flightBack: null
+// luggage: 7
+// dateBack: null
+// amountPaid: 7.5
+
+const optionsDate = {weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+// export function sendEmailManual () {
+//  sendEmailTransfer ("91964121-b136-4d41-8184-8b3836678892", 175, 175);
+// }
+
+function sendEmailTransfer (transferId, total, amountPaid) {
+    // emailTo, dynamicJSON
+    queryTransferEmail(transferId).then( transfer => {
+        //console.log('transfer found for send Email', transfer)
+        let {userEmail, villaName, passengers, provider, memberId, pickup, selectedWay} = transfer;  //generic data //priceToCharge, amountPaid
+        // console.log(priceToCharge, userEmail, amountPaid, villaName, passengers, provider, memberId, pickup, selectedWay);
+        let {babySeats='None', flight, airport, date, luggage=0, needs= 'None', timePickupBack=" pending"} = transfer; // oneWay data
+        let {babySeatsBack, luggageBack, needsBack, airportBack, flightBack, dateBack} = transfer; // wayBack data
+        //let balance = priceToCharge - Number(amountPaid);
+        let balance = +total - +amountPaid
+        const transferArray = [];
+        let pickupPoint = "airport of " + airport;
+        let destination = 'villa ' + villaName;
+        let pickupTime = "landing time"
+        if(pickup === "villaPickup") {
+            pickupPoint = 'villa ' + villaName;
+            destination = "airport of " + airport;
+            pickupTime = timePickupBack.slice(0,5);
+        }
+        let oneWay = {
+            fromPlace: pickupPoint,
+            toPlace: destination,
+            date: date.toLocaleDateString("en-GB", optionsDate),
+            time: pickupTime,
+            passengers: passengers,
+            needs: needs,
+            babySeats: babySeats,
+            flight: flight, 
+            luggage: luggage
+        }
+        transferArray.push(oneWay);
+        if(selectedWay === 'round') {   
+            let wayBack = {
+                fromPlace: 'Villa ' + villaName,
+                toPlace: "Airport of " + airportBack,
+                date: dateBack.toLocaleDateString("en-GB", optionsDate),
+                time: timePickupBack.slice(0,5),
+                passengers: passengers,
+                needs: needsBack,
+                babySeats: babySeatsBack,
+                flight: flightBack,
+                luggage: luggageBack
+            }
+            transferArray.push(wayBack);
+        }
+        //console.log(transferArray, 'transferArray');
+        getAddress(transfer.bookingId).then(address => {
+            //console.log(address, 'address returned');
+            const dynamicJSON = {
+                name: memberId.name,
+                address: address,
+                transferArray: transferArray,
+                providerName: provider.title,
+                providerPhone: provider.phone,
+                providerEmail: provider.email,
+                totalPrice: '€'+ total,
+                paid: '€'+ amountPaid,
+                remainder: '€'+ balance,
+                email: userEmail,
+                phone: memberId.mainPhone
+            }
+            //to customer
+            dynamicEmail('info@sakamoto.com', userEmail, "Transfer booked!", "sendEmailTransfer", false, 'transfer', dynamicJSON)
+            .then (resp => {
+                if(resp==='error') {dynamicEmail('info@sakamoto.com', userEmail, "Transfer booked!", "sendEmailTransfer", false, 'transfer', dynamicJSON)}
+            }); 
+            //to provider and admin     
+            //              //fromEmail,    toEmail,         subjectString,                sendingFunction,   booleanIfToAdmin, templateId,     JSON
+            dynamicEmail('info@sakamoto.com', provider.email, "Transfer booked!", "sendEmailTransfer", true, 'transfer', dynamicJSON)
+            .then (resp2 => {
+                if(resp2==='error') {dynamicEmail('info@sakamoto.com', userEmail, "Transfer booked!", "sendEmailTransfer", false, 'transfer', dynamicJSON)}
+            });
+        });
+    });
+}
+
+
+function getAddress (bookingId) {
+    return wixData.query('Contracts')
+    .eq('_id', bookingId)
+    .include('villa')
+    .find(options)
+    .then(( results => {
+        console.log(results, 'villa', results.items[0].villa.address.formatted, 'address')
+        return results.items[0].villa.address.formatted;
+    }))
+}
+
+// collection schema
+
+// babySeatsBack, luggageBack, needsBack, airportBack, flightBack, dateBack
+// babySeats, flight, airport, date, luggage, needs 
+// priceToCharge, userEmail, amountPaid, feePaid, villaName, passengers, provider
+// agent, transferId, isIntent, isBooked, bookingId, selectedWay = oneWay / round, transferWithDataForIntent, paymentObj, paymentSchedule, pickup= villaPickup / airportPickup
+// intentObj, memberId  
+
+function queryTransferEmail (transferId) {
+    return wixData.query('transferBookedIntent')
+    .eq('_id', transferId)
+    .include('provider')
+    .include('memberId')
+    .find(options)
+    .then( results => {
+        return results.items[0]
+    });
+}
+
+function sendOwnerEmail (ownerId, dynamicJson) {
+    wixData.get('Owners', ownerId, options).then ( owner => {
+    dynamicEmail('info@sakamoto.com', owner.wixUserEmail, "A new booking!!", "Boooking confirmed", false, 'confirmBooking', dynamicJson); // this send the email from sendGrid  
+    })
+}
+
+export function searchIfBookingTransfer ()  {
+    return getMyFullMember().then (fullMember => {
+        return wixData.query('Contracts')
+        .eq('member', fullMember.memberId)
+        .gt('checkIn', new Date())
+        .include('villa')
+        .find(options)
+        .then( bookings => {
+            if(bookings.totalCount > 0) {
+                return bookings.items.map( (contract) => {
+                    let {mainPic, checkIn, checkOut, villa} = contract;
+                    return {
+                        _id: contract._id,
+                        // reference: contract.title,
+                        checkin: checkIn,
+                        villa: villa.title,
+                        address: villa.address
+                        // pic: mainPic
+                    };
+                } ); 
+            }
+            else {
+                return [];
+            }
+        })
+    });
+}
+
+// Super, Another step forward {{name}}!
+
+// Transfer confirmed!!!
+
+// Service resume:
+
+// {{#each transferArray}} 
+// From {{fromPlace}}  To: {{toPlace}}.
+// On date: {{date}}.
+// Passengers num.: {{passengers}}.
+// Needs: {{needs}}.
+// Baby seats: {{babySeats}}.
+// Flight number: {{flight}}
+// {{/each}}
+
+
+// The service is provided by:
+// {{providerName}}
+// {{providerPhone}}
+// {{providerEmail}}
+
+// Total price €: {{totalPrice}}
+// Paid €: {{paid}}
+// Still due €: {{remainder}}
+

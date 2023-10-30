@@ -1,0 +1,39 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+
+let options = {
+  "suppressAuth": true,
+};
+
+export function retargetNewMembers () {
+  let today = new Date().getTime();
+  let yesterdayMs = today - 8.64e+7;
+  let yesterday = new Date(yesterdayMs);
+  wixData.query('MyMembers').ge('_createdDate', yesterday).find(options)
+  .then( results => {
+    console.log(results)
+    let newMembers = results.items;
+    if (newMembers.length > 0) {
+      newMembers.forEach( member => {
+        sendEmailNewMember(member);
+      })
+    }
+  })
+}
+
+async function sendEmailNewMember (member) {
+  let {title, firstName, _id} = member;
+  let ifInquiry = await checkIfInquiry(_id);
+  if (ifInquiry === false) { // no inquiry submitted yet
+  let dynamicJson = {name: firstName}
+  dynamicEmail('info@sakamoto.com', title, "We're here to assist you!", "retargetNewMember", false, 'retargetNewMember', dynamicJson); // this send the email from sendGrid          
+            //fromEmail,       toEmail,         subjectString,   sendingFunction,   booleanIfToAdmin, templateId,   JSON
+  }
+}
+
+function checkIfInquiry (memberId) {
+  return wixData.query('Inquiries').eq('myMember', memberId).find(options)
+  .then( results => {
+    if (results.totalCount > 0) {return true;} else {return false;}
+  })
+}

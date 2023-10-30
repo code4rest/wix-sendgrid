@@ -1,0 +1,167 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+
+var options = {
+    "suppressAuth": true,
+    //"suppressHooks": true,
+};
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+// main function
+export async function findCheckinDueNextWeek () {
+    let emailSent = [];
+    return searchCheckinDueNextWeek().then( contracts => {
+        //console.log( contracts, 'pending check-in contracts')
+        if (contracts.length > 0 && contracts[0].error === false) {
+            let counter = 0;
+            let p1 = new Promise( (resolve, reject) => {
+                contracts.forEach( (contract) => {
+                    let {email='NA', customerFirstName, reference, checkin} = contract;
+                    let dynamicJSON = {
+                        'name': customerFirstName,
+                        'reference': reference,
+                        'checkin': checkin,
+                    }
+                    if (email !== 'NA' && email !== "Not Member" && emailSent.findIndex( x => x === email) === -1) { 
+                        dynamicEmail('info@sakamoto.com', email, 'Alert, You have to book your check-in time', 'findCheckinDueNextWeek', true, 'checkinDueNextWeek', dynamicJSON);
+                        //console.log('sending email to', email, emailSent);
+                        emailSent.push(email);
+                        
+                    }
+                    counter++;
+                    if (counter === contracts.length) {
+                        resolve(emailSent);
+                    }   
+                })  
+            })
+            .catch( (err) => {
+                console.log(err, 'error in getTotalPayments')
+            } );
+            return p1.then( (pendingSent) => { 
+                //console.log(pendingSent, 'what we get to return to pending sent');
+                return pendingSent;
+            });
+        }
+    })
+}
+
+export function test () {
+    let array = ["info@namasteevillas.com", "sakamoto@hotmail.com"];
+    let dynamic1 = {
+        'name': "Pippo",
+        'reference': "sticaBooking",
+        'checkin': "25, May 2022",
+    }
+    let dynamic2 = {
+        'name': "Pippo2",
+        'reference': "sticaBooking2",
+        'checkin': "26, May 2022",
+    }
+    var dynamicJSON;
+        array.forEach( (mail, index) => {
+        index === 0 ? dynamicJSON = dynamic1 : dynamicJSON = dynamic2;
+        dynamicEmail('info@sakamoto.com', mail, 'Alert, You have to book your check-in time', 'findCheckinDueNextWeek', false, 'checkinDueNextWeek', dynamicJSON);
+    });                 
+}
+
+
+// export function test () {
+//  let emailsSent = ['c', 'e']
+//  let emails = ['NA','b','c','d','g','e','f', 'b'];
+//  emails.forEach( mail => {
+//      if (mail !== 'NA' && mail !== "Not Member" && emailsSent.findIndex( x => x === mail) === -1) { 
+//          console.log(mail, 'this shit must be sent', emailsSent);
+//          emailsSent.push(mail);
+//      } else {console.log('this other shit NOOOO', mail); }
+//  })
+// }
+
+
+function searchCheckinDueNextWeek () {
+    return searchCheckinScheduled ().then( array => {
+        //console.log(array, 'array pending checkin in n days');
+        if(array.length > 0) { // already checked the length
+            let toSend = [];
+            //console.log('COPY', copy)
+            let counter = 0;
+            let filter = new Promise( (resolve, reject) => {
+                array.forEach( (contract) => {
+                    counter++;
+                    checkInBooked(contract._id).then( resp => {
+                        //console.log(resp, 'resp', contract)
+                        if(resp !=='booked') {
+                            toSend.push(contract);
+                        } 
+                        if(array.length === counter) {resolve(toSend);}
+                    });
+                });
+            });
+            return filter.then( filtered => {
+                //console.log(filtered, "end of promise")
+                return filtered
+            });
+        } 
+        else {return [];}
+    });
+}
+
+function checkInBooked (contractId) {
+    return wixData.query('CheckInOut').eq('booking', contractId).limit(1).find(options)
+    .then( results => {
+        if(results.totalCount > 0) {return 'booked'}
+        return 'pending';
+    })
+}
+
+function searchCheckinScheduled () {
+    let today = new Date();
+    today.setHours(15);
+    let endRange = today.getTime() + (8.64e+7*7); //*7
+    let plusOneDay = endRange + 8.64e+7;
+    let minusOneDay = endRange - 8.64e+7;
+    let twoDays = today.getTime() + (8.64e+7*2);
+    return wixData.query('Contracts')
+    .ge('checkIn', new Date(minusOneDay)) 
+    .le('checkIn', new Date(plusOneDay)) 
+    .ne('deleted', true)
+    .or(                                                                              
+        wixData.query('Contracts')     
+        .ge('checkIn', today) 
+        .le('checkIn', twoDays) 
+        .ne('deleted', true)
+    )
+    .include('member')
+    .limit(999)
+    .find(options)
+    .then((results) => {
+        //console.log(results.items, results.totalCount)
+        if (results.items.length > 0) {
+            return results.items.map( (contract) => {
+                //console.log(contract.member, 'contract.member');
+                let {lastName, firstName, mainPhone, title, _id} = contract.member; 
+                if (!contract.member) {
+                    let {lastname, name, email='NA'} = contract;
+                    lastName = lastname;
+                    firstName = name; 
+                    mainPhone = null; 
+                    title=email;
+                    _id=null;
+                }
+                return {
+                    _id: contract._id,
+                    reference: contract.title,
+                    checkin: contract.checkIn.toLocaleDateString('en-GB', optionsDate),
+                    customerFirstName: firstName,
+                    email: title,
+                    error: false
+                }
+            })  
+        } else {return []}
+    })
+    .catch( (error) => {
+        console.log(error, 'error in searchOverdueContracts');
+        return [{error: true}]
+  } );
+}
+

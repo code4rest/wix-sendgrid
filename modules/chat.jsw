@@ -1,0 +1,641 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import {searchAgent} from 'backend/agents.jsw';
+import {dynamicEmail} from 'backend/sendGrid';
+import {countAllSecondStep} from 'backend/leaders'; 
+import {grabUser} from 'backend/admin.js';
+// import {roles} from 'wix-users-backend';
+
+
+var options = {
+"suppressAuth": true,
+};
+
+export function getMemberPrivacyData (searchValue) {
+  const user = wixUsersBackend.currentUser;
+  return user.getRoles()
+  .then( async (roles) => {
+    // console.log(roles);
+    if((roles[1].name || roles[0].name) === 'Admin') {
+      const data = await grabUser(searchValue);
+      return data;
+    }
+  } );
+}
+
+async function getMember () {
+  let user = wixUsersBackend.currentUser;
+  let email = await user.getEmail();
+  return wixData.query("MyMembers") 
+    .eq("title", email)
+    .include('agent')
+    .find(options)  
+    .then( (results) => {
+    if(results.length === 1) {
+        let {_id, firstName, agent, title} = results.items[0]; 
+        let memberEmail = title; // 4
+        console.log(agent, agent.title, 'agent and its title')
+      return [_id, firstName, agent._id, agent.email, memberEmail, agent.title];
+    }
+     } );
+}
+
+export async function leaderOneChat() {
+  let member = await getMember();
+  let memberId = member[0]
+  console.log(member, 'member found');
+  let  name = member[1];
+  let agentId = member[2];
+return wixData.query("Chat")
+  .eq("member", memberId)
+  .eq('agent', agentId)
+  .find(options)
+    .then( (results) => {
+      //console.log(results, 'results for this member and agent chat')
+        if(results.items.length > 0) {
+        let chat = results.items;
+        return chat;
+      } else {
+        return [];
+      }
+} );
+}
+
+export async function getChatLeader () {
+  const member = await getMember();
+  const memberId = member[0];
+  //console.log(userEmail, 'userEmail');
+  const chatData = await allChatLeader(memberId);  
+  //console.log(chatData, 'results for chatData');
+  if (chatData.length > 0 ) {
+    var data = chatData;
+  } else {
+    data = [];
+  }
+  //console.log(data, 'data, before returning frontend');
+  return data;
+}
+
+async function allChatLeader(memberId) {
+return wixData.query("Chat")
+  .eq('member', memberId)
+  .find(options)
+    .then( (results) => {
+      if(results.items.length > 0) {
+        let allChats = results.items;
+        return allChats;
+      } else {
+        return [];
+      }
+        } );
+}
+
+
+export async function pushChat (obj) {
+  const member = await getMember();
+  console.log(member, member[5], 'member')
+  const memberId = member[0];
+  const name = member[1];
+  const agent = member[2];
+  const agentEmail = member[3];
+  var agentName = member[5];
+  let date = new Date();
+  const id = date.getTime();
+  const idString = id.toString();
+  //console.log('running pushChat with obj, name, agent and memberId', obj, name, agent, memberId);
+  return wixData.query("Chat")
+  .eq("member", memberId)
+  .eq("agent", agent)
+  .find(options)
+    .then( async (results) => {
+      //console.log(results, 'chat found for member and agent');
+      obj.agent = agent;
+      obj.member = memberId;
+      obj.name = name;
+      obj._id = idString;
+      if(results.items.length > 0) {
+        let item = results.items[0];
+        var chat = item.chat; // updated last name
+        if (chat.length > 0) {
+          chat.push(obj);
+        } else {
+          chat = [];
+          chat.push(obj);
+        }
+        item.chat = chat;
+        item.agent = agent;
+        item.member = memberId;
+        let updated = await  wixData.update('Chat', item, options);
+        //console,console.log('updated chat', updated);
+        let updatedChat = updated.chat;
+        sendEmailAgent(name, agentEmail, obj.text, agentName);
+        return updatedChat;
+      } else {
+        //console.log('no chat found so we insert a new one)')
+        let toInsert = {
+          member: memberId,
+          agent: agent,
+          chat: [obj],
+        }
+        let inserted = await wixData.insert("Chat", toInsert, options);
+        //console.log('inserted a new one', inserted);
+        let updatedChat = inserted.chat;
+        sendEmailAgent(name, agentEmail, obj.text, agentName);
+        return updatedChat;
+      }
+    } )
+    .catch( (err) => {
+      let errorMsg = err;
+    } );
+}
+
+
+async function sendEmailAgent(customerName, email, text, agent) { // we send only to agent because the customer sent it
+console.log(customerName, email, text, agent, 'customerName, email, text, agent')
+let dynamicJson = {
+  "name":customerName,
+  "text": text,
+  'agent': agent,
+  }
+  //console.log(email, dynamicJson, 'email, dynamicJson');
+  dynamicEmail('info@sakamoto.com', email, "You got a message!", "message to agent from customer", false, 'message', dynamicJson); // this send the email from sendGrid          
+      //        fromEmail,          toEmail,  subjectString,   sendingFunction,           booleanIfToAdmin, templateId,   JSON    
+}
+
+
+export async function agentOneChat(memberId) {
+let agentData = await searchAgent ();
+let agentId = agentData[0];
+//console.log(memberId, agentId, 'memberId, agentId')
+return wixData.query("Chat")
+  .eq("member", memberId)
+  .eq('agent', agentId)
+  .find(options)
+    .then( (results) => {
+      //console.log(results, 'results for this member and agent chat')
+        if(results.items.length > 0) {
+          let chat = results.items;
+          return chat;
+      } else {
+        return [];
+      }
+} );
+}
+
+// ALERT ALERT ALERT pay attention NOT to return the full Member obj
+async function agentAllChat(agentId, x) {
+return wixData.query("Chat")
+  .eq('agent', agentId)
+  .include('member')
+  .limit(x)
+  .descending('_updatedDate')
+  .find(options)
+    .then( (results) => {
+      if(results.items.length > 0) {
+        let allChats = results.items;
+        return allChats;
+      } else {
+        return [];
+      }
+  } );
+}
+
+export async function agentXMsg (x) {
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  return agentAllChat(agentId, x).then( chatData => {
+    //console.log(chatData, 'results for chatData');
+    if (chatData.length > 0 ) {
+    return mapBasicMsg(chatData, x).then( (data) => {return data;});
+    } else {
+      return [];
+    }
+  }) 
+}
+
+function mapBasicMsg (chatData, x) {
+  let resumeArray = [];
+  let p1 = new Promise( (resolve, reject) => {
+    let counter =1;
+    chatData.forEach(chat => {
+      let {_id, member, agent, _updatedDate} = chat;
+      if (counter <= x) {
+        resumeArray.push({
+          _id: _id,
+          memberId: member._id,
+          agent: agent,
+          memberName: member.name, // full name
+          _updatedDate: _updatedDate,
+          msgNum: chat.chat.length,
+          memberEmail: member.title,
+        })
+      }
+      counter++;
+      //console.log(counter, resumeArray, chatData.length, 'counter, resumeArray, chatData.length');
+      if (counter === chatData.length) { // we return just 20 messages
+        resolve(resumeArray);
+      }
+    })
+  });
+  return p1.then(array => {return array});
+}
+
+export async function toBeRepliedMsg () {
+  //console.log('running mymember');
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  //console.log(userEmail, 'userEmail');
+  const chatData = await agentAllChat(agentId, 1000);  // let's search up to 1000 chats
+  //console.log(chatData, 'results for chatData');
+  if (chatData.length > 0 ) {
+  return filterToReply(chatData).then( (data) => {return data;});
+  } else {
+    return [];
+  }
+}
+
+function filterToReply (chats) {
+  let p1 = new Promise( (resolve, reject) => {
+    let toReplyYet = [];
+    let counter = 0;
+    chats.forEach( (msgObj) => {
+      //console.log(msgObj.chat, 'msg.chat');
+      let thisChats = msgObj.chat; // the obj has the chat inside
+      let lastIndex = thisChats.length - 1;
+      let lastMsg = thisChats[lastIndex];
+      //console.log(lastMsg, 'thisChats[lastIndex]');
+      if (lastMsg.readAgent === false) { // if the last message was sent by guest then it would be marked read (read is for guests, readAgent for agent) false
+        msgObj.chat._id = msgObj._id; // let's assign an _id for the repeater
+        //console.log(lastMsg, 'this is not read by agent and we push it in the array to return')
+        toReplyYet.push(lastMsg);
+      }
+      counter++;
+      if (counter === chats.length) {
+        //console.log(toReplyYet, 'to return from callback')
+        resolve(toReplyYet);
+      }
+        });
+    }) 
+  return p1.then( (array) => { 
+    //console.log(array, 'what we get to return');
+    return array;
+  });
+}
+
+export async function getChatAgent () {
+  //console.log('running mymember');
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  //console.log(userEmail, 'userEmail');
+  const chatData = await agentAllChat(agentId);  
+  console.log(chatData, 'results for chatData');
+  if (chatData.length > 0 ) {
+    var data = chatData;
+  } else {
+    data = [];
+  }
+  console.log(data, 'data, before returning frontend');
+  return data;
+}
+
+async function getMemberAgent (memberId) { // get member for agent page
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  return wixData.query("MyMembers") 
+    .eq('agent', agentId)
+    .eq("_id", memberId)
+    .include('agent')
+    .find(options)  
+    .then( (results) => {
+    if(results.length === 1) {
+        let myMember = results.items; 
+        let name = myMember[0].firstName; //0
+        let agentEmail = myMember[0].agent.email; // 1
+        let memberEmail = myMember[0].title; // 2
+        let agent = myMember[0].agent._id; // 3
+        let agentName = myMember[0].agent.title; // 4
+      return [name, agentEmail, memberEmail, agent, agentName];
+    }
+     } );
+}
+
+export async function pushChatAgent (obj) {
+  //const agentData = await searchAgent();
+  //var agent = agentData[0]; // agentId
+  const memberId = obj.member;
+  let fullMember = await getMemberAgent(memberId);
+  let customerEmail = fullMember[2];
+  var agent = fullMember[3]
+  const agentName = fullMember[4];
+  console.log(fullMember, customerEmail, 'chat found for member and agent');
+  let name = fullMember[0];
+  let date = new Date();
+  const id = date.getTime();
+  const idString = id.toString();
+  console.log('running pushChat with obj and agent', obj, agent, memberId);
+  return wixData.query("Chat")
+  .eq("member", memberId)
+  .eq("agent", agent)
+  .find(options)
+    .then( async (results) => {
+      obj._id = idString;
+      obj.agent = agent;
+      obj.name = name;
+      if(results.items.length > 0) {
+        let item = results.items[0];
+        var chat = item.chat; // updated last name
+        if (chat.length > 0) {
+          chat.push(obj);
+        } else {
+          chat = [];
+          chat.push(obj);
+        }
+        item.chat = chat;
+        item.agent = agent;
+        item.member = memberId;
+        let updated = await  wixData.update('Chat', item, options);
+        console.log('updated chat', updated);
+        let updatedChat = updated.chat;
+        sendEmailCustomer(name, customerEmail, obj.text, agentName);
+        return updatedChat;
+      } else {
+        console.log('no chat found so we insert a new one)')
+        let toInsert = {
+          member: memberId,
+          agent: agent,
+          chat: [obj],
+        }
+        let inserted = await wixData.insert("Chat", toInsert, options);
+        console.log('inserted a new one', inserted)
+        let updatedChat = inserted.chat;
+        sendEmailCustomer(name, customerEmail, obj.text, agentName);
+        return updatedChat;
+      }
+    } )
+    .catch( (err) => {
+      let errorMsg = err;
+    } );
+}
+
+async function sendEmailCustomer (customerName, customerEmail, text, agentName) {
+let dynamicJson = {
+  "name":customerName,
+  "customerEmail": customerEmail,
+  "text": text,
+  'agent': agentName,
+  }
+  console.log(customerEmail, dynamicJson, 'email, dynamicJson');
+  dynamicEmail('info@sakamoto.com', customerEmail, "You got a message!", "chat app agent", false, 'messageFromAgent', dynamicJson); // this send the email from sendGrid          
+      //        fromEmail,          toEmail,         subjectString,          sendingFunction,   booleanIfToAdmin,templateId,  JSON    
+}
+
+export async function checkTags (text) {
+  let tags = await getFaqTags();
+}
+
+function getFaqTags  () {
+  
+}
+
+export async function searchText (value) {
+  console.log(value, 'value to search')
+  const upperCase = value.charAt(0).toUpperCase() + value.slice(1);
+  const lowerCase = value.charAt(0).toLowerCase() + value.slice(1);
+  let topics = await wixData.query('FAQ').contains('question', lowerCase).or(wixData.query('FAQ').contains('question', upperCase)).find(options)
+  if(topics.items.length > 0) {
+  return topics.items.map( (item) => {
+        const {video=null} = item;
+        return {
+          "_id": item._id,
+          "question": item.question,
+          "link":item.link,
+          'description': item.description,
+          'pic': item.pic,
+          'video': video
+        };
+    });
+  } else {
+        return checkIfVilla(value).then( response => {
+          return response;
+        })
+      }
+}
+
+function checkIfVilla (value) {
+  return wixData.query('Villas')
+  .contains('title', value)
+  .include('gallery')
+  .find(options)
+  .then(results => {
+    if (results.totalCount > 0) {
+      return results.items.map( (item) => {
+        console.log(item, "for each item all booking leader");
+        let villaName = item.title;
+        let video;
+        item.gallery.video ? video = item.gallery.video : video = null;
+        return {
+          "_id": item._id,
+          "question": 'Villa ' + item.title,
+          "link": "https://www.sakamoto.com/one-villas-for-rent-marbella-puerto-banus?villa=" + item._id,
+          "video": video,
+          'description': item.description,
+          'pic': item.mainPic,
+        };
+      });
+    }
+    return [];
+  })
+}
+
+export async function searchCustomersAndChat (searchValue) {
+  let members = await searchMember(searchValue);
+  if (members.length >0) {
+      return membersArray(members).then( resultsArray => {return resultsArray;})
+  }
+  else {
+    return [];
+  }
+}
+/*
+export async function resumeCustomer (id) {
+  let members = await searchMemberId(id);
+  if (members.length >0) {
+      return membersArray(members).then( resultsArray => {return resultsArray;})
+  }
+  else {
+    return [];
+  }
+}
+*/
+
+export async function searchMemberId (id) {
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  return wixData.query("MyMembers") 
+    .eq('agent', agentId)
+    .eq('_id', id)
+    .find(options)
+    .then(async (results) => {
+      console.log(results, results.totalCount)
+        if (results.totalCount > 0) {
+          return results.items;
+        } else {return []}
+    } )
+    .catch( (error) => {
+    return error;
+    } );
+}
+
+export function countAllSecondStepFrontend (email) {
+  return countAllSecondStep(email).then( result => {
+    return result;
+    })
+}
+//member
+// _id: "4f47682c-7536-42f2-b12a-2222dc16e4f1"
+// firstName: "Matteo"
+// lastName: "Colombo"
+// name: "Matteo Colombo"
+// email: "matteo.colombo@aadv.it"
+// phone: "+393271646024"
+
+function membersArray (members) {
+  let p1 = new Promise( (resolve, reject) => {
+    let array = [];
+    let counter = 0;
+    members.forEach( async (member) => {
+      console.log(member, 'this member count');
+      let chatArray = [];
+      let {_id, name, email, phone='NA', identificationNumber='NA', identificationType='NA'} = member;
+      let chat = await agentOneChat(_id);
+      console.log(chat, 'chat');
+      if (chat.length > 0) {
+        chatArray= chat[0].chat;
+      }
+      array.push({
+        _id:_id,
+        name: name,
+        email: email,
+        phone: phone,
+        chat: chatArray,
+        identificationNumber: identificationNumber,
+        identificationType: identificationType
+      })
+      counter++;
+      if (counter === members.length) {
+        console.log(array, 'to return from callback')
+        resolve(array);
+      }
+        });
+    }) 
+  return p1.then( (finalArray) => { 
+    console.log(finalArray, 'what we get to return');
+    return finalArray;
+  });
+}
+
+export async function searchMember (searchValue) {
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  return wixData.query("MyMembers") 
+      .eq('agent', agentId)
+      .contains('name', searchValue)
+    .or(                                                                              
+        wixData.query("MyMembers")  
+        .eq('agent', agentId)       
+        .eq('title', searchValue)
+    )
+    .or(
+        wixData.query("MyMembers") 
+        .eq('agent', agentId)   
+        .contains('mainPhone', searchValue)
+    )
+    .find(options)
+    .then(async (results) => {
+      console.log(results, results.totalCount)
+        if (results.totalCount > 0) {
+          let mapped = await  mapMember(results.items);
+          return mapped;
+        } else {return []}
+    } )
+    .catch( (error) => {
+    return error;
+    } );
+}
+
+export async function searchUniqueMember (searchValue) {
+  let agentData = await searchAgent ();
+  let agentId = agentData[0];
+  // const agentId = "bf02e700-0b94-4fcd-b284-43dd8980f00b";
+  return wixData.query("MyMembers") // both name and surname
+    .eq('agent', agentId)
+    .contains('firstName', searchValue)
+    .or(                                                                              
+      wixData.query("MyMembers")  // at least surname
+      .eq('agent', agentId)       
+      .contains('lastName', searchValue)
+    )
+    .or(                                                                              
+      wixData.query("MyMembers")  // at least surname
+      .eq('agent', agentId)       
+      .contains('title', searchValue)
+    )
+    .find(options)
+    .then(async (results) => {
+      console.log(results, results.totalCount)
+        if (results.totalCount > 0) {
+          let mapped = await  mapMember(results.items);
+          return mapped;
+        } else {
+          // return wixData.get("MyMembers", '9f2eebe7-d8a9-4f76-80e6-091d92fa60bb', options).then( async (memberNA) => {
+          //   let mapped = await  mapMember([memberNA]);
+          //   return mapped;
+          // });
+          // faster without another dataQuery
+         return [{
+            _id:'9f2eebe7-d8a9-4f76-80e6-091d92fa60bb', 
+            firstName:'Not registered', 
+            lastName:'Not a member',
+            name: 'Not a member',
+            email: 'Not registred user',
+            phone:'Select this if not a member',
+            identificationNumber: 'NA',
+            identificationType: 'NA'
+        }];
+      }
+    } )
+    .catch( (error) => {
+    return error;
+    } );
+}
+
+// '9f2eebe7-d8a9-4f76-80e6-091d92fa60bb'
+
+function mapMember (fullMemberArray) {
+  return fullMemberArray.map( member => {
+    console.log(member, 'member to check');
+    let {_id, lastName, firstName, name, title, mainPhone='NA', identificationNumber='NA', identificationType='NA'} = member;
+    // if(!member.identificationType) {var passport ='NA'} else {member.identificationType}
+    // if(!member.identificationNumber) {var identificationNumber='NA'} else {member.identificationNumber}
+    console.log('each member', member);
+    return {
+        _id:_id, 
+        firstName:firstName, 
+        lastName:lastName, 
+        name: name,
+        email: title, 
+        phone:mainPhone,
+        identificationNumber: identificationNumber,
+        identificationType: identificationType
+    }
+   })
+}
+
+export function markMsgRead (memberId) {
+  return agentOneChat(memberId).then( chatArray => {
+    let length = chatArray[0].chat.length;
+    chatArray[0].chat[length-1].readAgent = true;
+    return wixData.update('Chat', chatArray[0], options).then( updated => 'updated')
+    .catch(err => 'error');
+  });
+}   

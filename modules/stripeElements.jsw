@@ -1,0 +1,751 @@
+import { Stripe } from 'stripe';
+import wixData from 'wix-data';
+import {bookingData, check, ownerData} from 'backend/bookings'; //check
+import {queryAvailableIcalAndContract} from 'backend/queryBooked';
+import {getStripeKey} from 'backend/secrets.js';
+import {updateCal} from 'backend/ical'; 
+import {dynamicEmail} from 'backend/sendGrid';
+import {saveError} from "backend/errorMonitorig";
+
+var options = {
+    "suppressAuth": true,
+};
+
+
+
+export function connectedAccountId(offerId) {
+    return wixData.query("Offers")
+    .eq('_id', offerId)
+    .include('villa')
+    .find(options)
+    .then(async (results) => {
+        console.log(results.items, 'offer found');
+        if (results.items.length > 0) {
+            let firstItem = results.items[0]; //see item below
+            const ownerId = firstItem.villa.owner;
+            const fullOwner = await ownerData(ownerId);
+            const ownerStripe = fullOwner.stripeId;
+            console.log(ownerId, 'ownerId');
+            return ownerStripe;
+        } else {
+            console.log('no intent id found for this offer');
+            return null;
+        }
+    })
+    .catch((err) => {
+        let errorMsg = err;
+    });
+}
+
+const optionsDate = {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+};
+
+export async function intentCreate(offerId) {
+    const intent = await intentCreateBack(offerId);
+    if(intent !== 'error') {return intent;}
+    const intent2 = await intentCreateBack(offerId);
+    return intent2;
+}
+
+
+async function intentCreateBack(offerId) {
+    const offer = await bookingData(offerId); //get the data about the offer
+    //console.log(offer, 'fullOffer')
+    let available = await queryAvailableIcalAndContract(offer.checkIn, offer.checkOut, offer.villaId); //check if dates still available 
+    if (available === "free") {
+        let upFront = offer.upFront;
+        // setup the payment data
+        const totalAgent = offer.totalAgent;
+        // const processingFee = offer.processingFee;
+        //const coAgentFee = offer.totalCoAgent;
+        const ownerFullData = offer.owner;
+        //console.log(ownerFullData, 'ownerfullData');
+        const ownerStripeAccountId = ownerFullData.stripeId;
+        let {payOwnerNow=false} = offer;
+        if(payOwnerNow === true) { // check if we have to pay the owner
+            //var totalFee = Number(totalAgent + coAgentFee); // + processingFee is included already in total agent
+            var totalFee = totalAgent; // totalAgent has already the coAgent fee added
+            // ALERT WE NEED TO MOLTIPLY BY 100 BECAUSE THOSE ARE CENTS
+        } else {totalFee = upFront}
+        
+        if (totalFee >= upFront) { 
+            totalFee = upFront - Math.round(upFront*0.025); // let's pass them the fee
+            //totalFee = parseInt(totalFee, 10);
+        }
+        totalFee = Math.round(totalFee * 100);
+        upFront = Math.round(upFront * 100);
+        //console.log(totalFee, 'totalFee');
+        // now send the payment intent 
+        const key = await getStripeKey(); // LIVE
+        //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+        const stripe = await new Stripe(key);
+        const checkIn = new Date(offer.checkIn);
+        console.log(checkIn, 'date');
+        let fullName = offer.name + offer.lastname;
+        let email = offer.member.title;
+        // Create the PaymentIntent
+        //console.log(upFront, totalFee, typeof upFront, typeof totalFee, 'upFront, totalFee, typeof upFront, typeof totalFee');
+        const paymentIntent = await stripe.paymentIntents.create({
+            // options to any 3d is asking always to trigger the 3D SCA
+            // "automatic" or "any" any means to apply to all the payment the SCA 3D secure
+            payment_method_options: {
+                "card": {
+                "request_three_d_secure": "any"  
+                }
+            },
+            payment_method_types: ['card'],
+            amount: upFront,
+            currency: 'eur',
+            description: 'Rental of villa ' + offer.villa + ', Check-in: ' + checkIn.toLocaleDateString('en-GB', optionsDate) + ', Number of night: ' + offer.nightsNumber + ', totalPrice: €' + offer.price + ', booking Non-Refundable',
+            receipt_email: email,
+            metadata: {
+                "customer": fullName,
+                'email': email,
+                'Rental of villa': offer.villa,
+                'City': offer.city,
+                'Check-in': checkIn.toLocaleDateString('en-GB', optionsDate),
+                'Number of night': offer.nightsNumber,
+                'upfront': offer.upFront,
+                'outstanding amount due': offer.balance,
+                'totalPrice': offer.price,
+                'booking type': 'Non-Refundable for any cancellation. All the travelling risks are taken by the customer',
+            },
+            application_fee_amount: totalFee, // we grab it from backned as we did from offer
+        }, {
+            stripeAccount: ownerStripeAccountId, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+        });
+        //console.log(paymentIntent, 'full intent backend');
+        const paymentSecretClient = paymentIntent.client_secret;
+        return paymentSecretClient;
+    } 
+    if(available === 400) { return 'error';}
+    else {
+        return 'not available';
+    }
+}
+
+export async function intentCreateTest(offerId) {
+    const offer = await bookingData(offerId); //get the data about the offer
+    let upFront = offer.upFront;
+    const totalAgent = offer.totalAgent;
+    // console.log(upFront, totalAgent, 'upFront, totalAgent');
+    const coAgentFee = offer.totalCoAgent;
+    // const{payOwnerNow=false} = offer;
+    // if(payOwnerNow === false) { // check if we have to pay the owner
+    //  console.log('case payOwner now true', totalAgent, coAgentFee)
+    //  var totalFee = Number(totalAgent + coAgentFee); // + processingFee is included already in total agent
+    //  console.log(totalFee, 'totalFee');
+    // } else {
+    //  console.log('case payOwnerNow false');
+    //  totalFee = upFront;
+    // }
+    // if (totalFee >= upFront) { 
+    //  console.log('totalFee before case fee >= upfront', totalFee);
+    //  totalFee = upFront - Math.round(upFront*0.025); // let's pass them the fee
+    //  //totalFee = parseInt(totalFee, 10);
+    //  console.log('totalFee after', totalFee);
+    // }
+    // totalFee = Math.round(totalFee * 100);
+    // upFront = Math.round(upFront * 100);
+    //return {upfront: upFront, totalFee: totalFee}
+    console.log(typeof Number((totalAgent+coAgentFee).toFixed(2)));
+    return {total:Number((totalAgent+coAgentFee).toFixed(2)), totalAgent:totalAgent, coAgentFee:coAgentFee}
+}
+
+// just removed because added in the funtion below      getIntentResponse (paymentIntentId, connectedAccount)               
+// ALERT LIVE
+    // const connectedAccount = await connectedAccountId (offerId);
+    // const key = await getStripeKey(); // LIVE
+    // //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+    // const stripe = await new Stripe(key);
+    // //ALERT here retrieving the payment intent and in insert payment we retrieve the res
+    // const intentResponse = await stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+    //  paymentIntentId, {
+    //      stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+    //  }
+    // );                   
+export async function confirmation (offerId, paymentIntentId) {
+    const connectedAccount = await connectedAccountId (offerId);
+    const intentResponse = await getIntentResponse (paymentIntentId, connectedAccount);
+    const charges = intentResponse.charges.data[0];
+    console.log(intentResponse, charges, 'intent and charges obj after payment confirmation');
+    const upFrontPaid = Number(intentResponse.amount_received) / 100; 
+    const offer = await bookingData(offerId);
+    console.log(offer, 'offer with full owner');
+    let bookingArray = await insertBooking(offer, upFrontPaid); // 0 index is bookingId, 1 index is ref
+    if(bookingArray[0] === "error") {
+        bookingArray = await insertBooking(offer, upFrontPaid);
+        addPayment (bookingArray, intentResponse, offer);
+    }
+    else { addPayment (bookingArray, intentResponse, offer);}
+}
+
+async function addPayment (bookingArray, intentResponse, offer) {
+    const bookingId = bookingArray[0]; // [id, reference]
+    const bookingRef = bookingArray[1];
+    console.log(bookingId, 'this is the booking id');
+    let paymentResponseObj = await insertPayment(bookingId, intentResponse, offer, bookingRef);
+    if(paymentResponseObj.error === 'error') {
+        paymentResponseObj = await insertPayment(bookingId, intentResponse, offer, bookingRef);
+        if(paymentResponseObj.error === 'error') {return 'done';}
+        else {return 'error';}
+    } 
+    else {return 'done'}
+}
+
+export async function getIntentResponse (paymentIntentId, connectedAccount) {
+    const key = await getStripeKey(); // LIVE
+    //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+    const stripe = await new Stripe(key);
+    const getIntentResponse = new Promise( (resolve, reject) => {
+        stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+            paymentIntentId, {
+                stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+            }
+        ).then( intentResponse => {
+            if(intentResponse) {
+                resolve(intentResponse);
+            }
+            else {
+                stripe.paymentIntents.retrieve( // let's find the payment obj for this payment which went thru
+                    paymentIntentId, {
+                        stripeAccount: connectedAccount, //'{{CONNECTED_STRIPE_ACCOUNT_ID}}'
+                    }
+                ).then( intentResponse => {
+                    if(intentResponse) {
+                    resolve(intentResponse);
+                    } else {
+                        resolve('error');
+                    }
+                });
+            }
+        });
+    });
+    return getIntentResponse.then( response => response)
+}
+
+// ALERT I COULD USE CHARGE OR THE BALANCE TRANSACTION ... now susing both
+async function insertPayment(bookingId, response, offer, bookingRef) {
+    const key = await getStripeKey(); // LIVE
+    //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // ALERT SWITCH TO LIVE my own test TEST SECRET key
+    const stripe = await new Stripe(key);
+    const balanceTransactionId = response.charges.data[0].balance_transaction; //grab the balanceTransactioId to search line 147 the balance transaction
+    //console.log(balanceTransactionId, 'balanceTransactionId');
+    // then retrieve this balance transaction
+    const ownerFullData = offer.owner;
+    console.log(ownerFullData, 'ownerfullData');
+    const ownerStripeAccountId = ownerFullData.stripeId;
+    //console.log(ownerStripeAccountId, 'ownerStripeAccountId')
+    const balanceTransaction = await stripe.balanceTransactions.retrieve(
+        balanceTransactionId, // transactionId
+        {
+            stripeAccount: ownerStripeAccountId, // "{{CONNECTED_STRIPE_ACCOUNT_ID}}"
+        }
+    );
+    const charge = response.charges.data[0];
+    const checkinDate = offer.checkIn;
+    const vatOncommission = offer.vatOncommission;
+    const metadata = charge.metadata;
+    const totalPaid = Number(response.amount_received) / 100;
+    //const stripeFee = response.
+    const notCentsStripeFees = await calculateStripeFee (balanceTransaction, charge.application_fee_amount);
+    const applicationFee = Number(charge.application_fee_amount) / 100;
+    const ownerPaid = Math.round((totalPaid - applicationFee)*100)/100;
+    const ownerNetPaid = Math.round((ownerPaid - notCentsStripeFees)*100)/100;
+    const description = response.description;
+    const plusVatCommission = offer.plusVatCommission;
+    const lastFour = charge.payment_method_details.card.last4;
+    let processing = 0;
+    if(offer?.processingFee) {processing = offer.processingFee;}
+    if(applicationFee<processing) {processing=applicationFee;}
+    const agentFee = applicationFee-processing;
+    let toInsert = {
+        'title': bookingRef,
+        //'fullResponse': response,
+        'booking': bookingId,
+        'paymentId': response.id,
+        'paymentMethodId': response.payment_method,
+        // the charge array contains the charge OBJ at position [0]
+        'chargeObj': charge,
+        'balanceTransactionObj': balanceTransaction,
+        'totalGrossPaid': totalPaid,
+        'totalNetPaid': totalPaid - notCentsStripeFees,
+        // 'totalNetPaid': missing the fee amount to calculate it
+        'paymentFee': applicationFee, // total agentFee and it includes VAT but it doesn't include stripe fee because paid by owner                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+        //'totalNetPaid': response.xxxx, need the stripe fee to calculate it
+        'note': description,
+        'payer': charge.billing_details,
+        'metadata': metadata,
+        //'cardLastFour': lastFour,
+        'payerCountry': charge.payment_method_details.card.country,
+        'agent': offer.agent,
+        'owner': ownerFullData._id,
+        'ownerGross': ownerPaid,
+        'ownerNet': ownerNetPaid,
+        'coAgent': offer.coAgentId,
+        'connectedAccount': ownerStripeAccountId, // connected account where this payment was sent to
+        'payDate': new Date(),
+        'member': offer.member,
+        'stripeFee': notCentsStripeFees,
+        'payMethod': 'Card ****' + lastFour,
+        'payWhat': 'booking', // damage, booking, service, checkin ...... 4 kind of payment reason
+        'payPlatform': 'Hedo_Stripe',
+        'plusVatCommission': offer.plusVatCommission,
+        'vatOncommission': vatOncommission,
+        'agentFee': agentFee,
+        'hedoFee': processing
+    };
+    //console.log(toInsert, 'OBJ to insert in Payments collection');
+    return wixData.insert("Payments", toInsert, options)
+        .then(async (payment) => {
+            //console.log(payment, 'payment created after booking created');
+            // payment.plusVatCommission = plusVatCommission;
+            // payment.description = description;
+            // payment.metadata = metadata;
+            // payment.vatOncommission = vatOncommission;
+            // payment.checkinDate = checkinDate;
+            // let invoiceId = await insertInvoice(payment);
+            const payInvoiceIds = {
+                'paymentId': payment._id,
+                'invoiceId': 'no invoice', //invoiceId
+                'error': 'none'
+            }
+            return payInvoiceIds;
+        })
+        .catch((err) => {
+            let errorMsg = err;
+            const severityLevel = "high";//low, medium, high
+            saveError(err, "insertPayment in stripeElements.jsw", severityLevel); //error, functionName, severityLevel
+            return {
+                'error': 'error'
+            }
+        });
+}
+
+
+// fucking assholes have returned me differen position in array of details and again different value of fee. A nightmare
+export function calculateStripeFee (balanceTransaction, applicationFee) {
+    let {fee=0, fee_details=[]} = balanceTransaction; // this is the total fucking fee; Hedo fee plus stripe fee
+    if (fee_details.length > 0) {
+        let amount1 = fee_details[0];
+        let amount2 = fee_details[1];
+        if (amount1.description === "Stripe processing fees") {
+            notCentsStripeFees = amount1.amount/100;
+        } else if (amount2.description === "Stripe processing fees") {
+            notCentsStripeFees = amount2.amount/100;
+        }
+    } 
+    else if (fee > applicationFee) {
+    var notCentsStripeFees = (fee-applicationFee) / 100;
+    }
+    else {
+            notCentsStripeFees = 0; // fucking worstcase scenario
+        }
+    return notCentsStripeFees;
+}
+
+
+function getOffer(offerId) {
+    return wixData.query("Offers")
+        .eq('_id', offerId)
+        .include('villa')
+        .include('city')
+        .include('member')
+        .find(options)
+        .then((results) => {
+            if (results.items.length > 0) {
+                let offer = results.items[0]; //see item below
+                return offer;
+            } else {
+                // handle case where no matching items found
+            }
+        })
+        .catch((err) => {
+            let errorMsg = err;
+        });
+}
+
+const optionsDateEmail = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+import {deleteOffers} from 'backend/offers';
+
+//ALERT YOU ARE RECALLING THE OFFER getOffer(offerObj._id)  HERE EVEN IF PASSING THE OFFER ALREADY AS ARGUMENT SO DOING TWICE
+
+// ALERT PRICE INCLUDES ALREADY THE EXTRA BEDS FROM THE OFFER BECAUSE THE PRICE INCLUDES THE EXTRA BEDS IN THE OFFER
+// SO IF EXTRA BEDS CHANGE THEN ALSO price , totalPriceIclProcesssing, priceNoExtraBeds, ownerPrice, extraBedEur, extraBedsOwner, balance totalPriceOwner,  extraBedsOwner AND extraBedsComm and many others MUST CHANGE
+async function insertBooking(offerObj, upFrontPaid) {
+    const offer = await getOffer(offerObj._id);
+    let {phone='', bidCoins=0, extraBedEur=0, extraBedNo=0, extraBedsComm=0, coAgentAmount=0, commissionSplit=false, vatOncommission=0} = offer 
+    let {policy='fixed', specialTerms='None', clientNote='None', plusVatCommission=null, secondPay=0, secondPayDate=null} = offer
+    var checkIn = offer.checkIn;
+    checkIn.setHours(14); 
+    var checkOut = offer.checkOut;
+    checkOut.setHours(10);
+    const year = checkIn.getFullYear();
+    let month = checkIn.getMonth();
+    month = month + 1; // not index 0-11 but what people know as month 1-12
+    const day = checkIn.getDate(); //1-31
+    const ref = offer.villa.title + year.toString() + month.toString() + day.toString(); //+ '/' + metadata.customer + '/'  removed for 179
+    let toInsert = {
+        'title': ref,
+        'totalPriceIclProcesssing': offer.totalPriceIclProcesssing, // price plus processing so final price before change in beds or checkin later stage
+        'member': offer.member,
+        'checkIn': checkIn,
+        'checkOut': checkOut,
+        'villa': offer.villa,
+        'channel': 'Hedo',
+        'guestNumber': offer.guestNumber,
+        'nightsNumber': offer.nightsNumber,
+        'price': offer.price, // ********** this is the final full price of the offer which includes  the extra beds and VAT but NOT PROCESSSING fee which is added by the marketplace
+        'extraBedEur': extraBedEur, // total cost extra beds included (bed price times beds number)
+        'extraBedNo': extraBedNo,
+        'balanceDate': offer.balanceDate,
+        'commission': offer.commission,
+        'cashBalance': offer.cashBalance,
+        'extraBedsComm': extraBedsComm,
+        'processingFee': offer.processingFee,
+        'coAgentAmount': coAgentAmount,
+        'extraBedsOwner': offer.extraBedsOwner,
+        'noteToOwner': offer.noteToOwner,
+        'clientNote': clientNote,
+        'specialTerms': specialTerms,
+        'agent': offer.agent,
+        'city': offer.city,
+        'bidCoins': bidCoins,
+        'coAgent': offer.coAgent,
+        'commissionSplit': commissionSplit,
+        'cleaningFee': offer.cleaningFee,
+        'extraBedPrice': offer.extraBedPrice, // price per bed
+        'coAgentCommPerc': offer.coAgentCommPerc,
+        'comissionPercentage': offer.comissionPercentage,
+        'agentDoCleaning': offer.agentDoCleaning,
+        'priceNoExtraBeds': offer.priceNoExtraBeds,
+        'villaName': offer.villaName,
+        'owner': offer.villa.owner,
+        'extraCheckinEur' : 0,
+        'extraCheckinOwner': 0,
+        'extraCheckinFee': 0,
+        'extraCheckinStaff': 0,
+        'vatOncommission': vatOncommission,
+        'name': offer.member.firstName,
+        'lastname': offer.member.lastName,
+        'phone': phone,
+        'email': offer.member.title,
+        'policy': policy,
+        'plusVatCommission': plusVatCommission,
+        'secondPay': secondPay, 
+        'secondPayDate': secondPayDate
+    };
+    //console.log(toInsert, 'OBJ to insert in bookings collection Contracts');
+    return wixData.insert("Contracts", toInsert, options)
+        .then((booking) => {
+            //console.log(booking, 'contract created after payment succedeed');
+            const {checkIn, nightsNumber, _id, villa} = booking;
+            // updateCal(checkIn, nightsNumber, _id, villa); // added in hook after insert
+            //sendEmailBooking(booking, offer.upFront, offer.balance, offer.villa.address.formatted); // both owner and customer
+            sendEmailBooking(booking, upFrontPaid, offer.villa.address.formatted); // both owner and customer
+            removeInquiryIOffers(offer.inquiry);
+            //updateCal(checkIn, nightsNumber, _id, villa); // DONE WITH HOOK
+            let reference = booking.title;
+            return [booking._id, reference, 'booking_Created'];
+        })
+        .catch((err) => {
+            let errorMsg = err;
+            const severityLevel = "high";//low, medium, high
+            saveError(err, "insertBooking in stripeElements.jsw", severityLevel); //error, functionName, severityLevel
+            return ["error"];
+        });
+}
+
+export async function removeInquiryIOffers(inquiryId) {
+    let inquiry = await wixData.get('Inquiries', inquiryId, options);
+    if(inquiry?.guestsLargeGroup > 0) {
+        // setTimeout( () => {
+        //  wixData.remove('Inquiries', inquiryId, options);
+        //  removeOfferServer(inquiryId);
+        // }, 1.8e+6); // after 30. minutes
+        return 'not to be cancelled';
+    }
+    wixData.remove('Inquiries', inquiryId, options);
+    removeOfferServer(inquiryId);
+    return 'done';
+}
+
+function removeOfferServer (id) { 
+  const offer = new Promise( (resolve, reject) => {resolve(getAllOfferForOneInquiry(id));});
+  offer.then(offersArray => {
+      console.log('all offer for this inquiry', offersArray)
+      if(offersArray.length >0) {
+        offersArray.forEach( offer => {
+            wixData.remove("Offers", offer._id, options).then( (results) => {
+                console.log('removed')
+            });
+            //and should catch the error but not time now to manage it
+        });
+    }
+  })
+  .catch( (err) => {
+    console.log(err, 'error in removing offer');
+  });
+}
+
+function getAllOfferForOneInquiry (id) {
+  return wixData.query('Offers').eq('inquiry', id).limit(1000).find(options)
+  .then(results => {return results.items})
+}
+
+import {getFullImageURL} from 'backend/offers.jsw';
+
+export async function sendEmailBooking (booking, upFrontPaid, address) {
+    console.log('sending email with booking, upFront, balance ', booking);
+    console.log(upFrontPaid, typeof upFrontPaid);
+    let {member, checkIn, checkOut, title, policy='fixed', specialTerms, secondPayDate, totalPriceIclProcesssing} = booking;
+    let secondPay=0;
+    if(booking?.secondPay) {secondPay= Number(booking.secondPay)}
+    const balance = totalPriceIclProcesssing - (upFrontPaid + secondPay);
+    if(+secondPay < 1) {
+      secondPayDate=null;
+      var secondPayString = null;
+      var secondDateLabel = null;
+      var secondPaymentLabel = null;
+    }
+    else {
+      secondPayDate = secondPayDate.toLocaleDateString('en-GB', optionsDate);
+      secondDateLabel = '2nd Pay due on: ';
+      secondPayString = '€'+ secondPay;
+      secondPaymentLabel = '2nd Pay amount: ';
+    }
+    wixData.get('MyMembers', member, options).
+    then( async (memberData) => {
+        let {firstName,} = memberData;
+        let  totalPriceIclProcesssing = booking.totalPriceIclProcesssing;
+        let {damageDeposit, city, villaName, ownerId, pic, turisticLicence, link} = await getVillaData(booking.villa);
+        const picConverted = await getFullImageURL(pic);    
+        const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail);
+        const checkOutString = checkOut.toLocaleDateString('en-GB', optionsDateEmail);
+        const balanceDateString = booking.balanceDate.toLocaleDateString('en-GB', optionsDateEmail);
+        let dynamicJson = {
+            "name":firstName,
+            "reference": title,
+            "villa": villaName,
+            "checkin": checkInString,
+            "checkout": checkOutString,
+            "price": "€"+ totalPriceIclProcesssing,
+            "nights": booking.nightsNumber,
+            "guests": booking.guestNumber,
+            "upfront": "€"+ upFrontPaid,
+            "secondPaymentLabel": secondPaymentLabel,
+            "secondPay": secondPayString,
+            "secondDateLabel": secondDateLabel,
+            "secondPayDate": secondPayDate,
+            "balance": "€"+ balance,
+            'balanceDateString': balanceDateString,
+            "city": city,
+            "damage": "€"+ damageDeposit,
+            "policy": policy,
+            "pic": picConverted,
+            "turistLicence": turisticLicence,
+            "specialTerms": specialTerms,
+            "address": address,
+            "link": link
+        } 
+        console.log(dynamicJson, 'dynamicJSON email')
+        //email to customer 
+        dynamicEmail('info@sakamoto.com', memberData.title, "Congrats, Booking completed!", "Boooking confirmed", true, 'confirmBooking', dynamicJson); // this send the email from sendGrid          
+                        //fromEmail,           toEmail,         subjectString,             sendingFunction,   booleanIfToAdmin, templateId,     JSON
+        //email to owner ; easier the same to owner too
+        sendOwnerEmail(ownerId, dynamicJson);
+    });
+}
+
+// //export function sendEmailBooking (offer,  memberId, checkIn, checkOut, reference) {
+// export function sendEmailBookingOLD (booking, upFront, balance, address) {
+//   //console.log('sending email with booking, upFront, balance ', booking, upFront, balance)
+//  let {member, checkIn, checkOut, title, policy='fixed', specialTerms, secondPay, secondPayDate} = booking;
+//  if(+secondPay < 1) {
+//       secondPayDate=null;
+//       secondPay = null;
+//       var secondDateLabel = null;
+//       var secondPaymentLabel = null;
+//     }
+//     else {
+//       secondPayDate = secondPayDate.toLocaleDateString('en-GB', optionsDate);
+//       secondDateLabel = '2nd Pay due on: ';
+//       secondPay = '€'+secondPay;
+//       secondPaymentLabel = '2nd Pay amount: ';
+//     }
+//  wixData.get('MyMembers', member, options).
+//  then( async (memberData) => {
+//      let {firstName,} = memberData;
+//      let  totalPriceIclProcesssing = booking.totalPriceIclProcesssing;
+//      let {damageDeposit, city, villaName, ownerId, pic, turisticLicence, link} = await getVillaData(booking.villa);
+//      const picConverted = await getFullImageURL(pic);    
+//      const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail);
+//      const checkOutString = checkOut.toLocaleDateString('en-GB', optionsDateEmail);
+//      const balanceDateString = booking.balanceDate.toLocaleDateString('en-GB', optionsDateEmail);
+//      let dynamicJson = {
+//          "name":firstName,
+//          "reference": title,
+//          "villa": villaName,
+//          "checkin": checkInString,
+//          "checkout": checkOutString,
+//          "price": totalPriceIclProcesssing,
+//          "nights": booking.nightsNumber,
+//          "guests": booking.guestNumber,
+//          "upfront": "€" +  upFront,
+//          "secondPaymentLabel": secondPaymentLabel,
+//          "secondPay": secondPay,
+//          "secondDateLabel": secondDateLabel,
+//          "secondPayDate": secondPayDate,
+//          "balance": balance,
+//          'balanceDateString': balanceDateString,
+//          "city": city,
+//          "damage": "€" + damageDeposit,
+//          "policy": policy,
+//          "pic": picConverted,
+//          "turistLicence": turisticLicence,
+//          "specialTerms": specialTerms,
+//          "address": address,
+//          "link": link
+//      } 
+//      console.log(dynamicJson, 'dynamicJSON email');
+//      //email to customer 
+//      dynamicEmail('info@sakamoto.com', memberData.title, "Congrats, Booking completed!", "Boooking confirmed", true, 'confirmBooking', dynamicJson); // this send the email from sendGrid          
+//                      //fromEmail,           toEmail,         subjectString,             sendingFunction,   booleanIfToAdmin, templateId,     JSON
+//      //email to owner ; easier the same to owner too
+//      sendOwnerEmail(ownerId, dynamicJson);
+//  })
+// }
+
+function sendOwnerEmail (ownerId, dynamicJson) {
+    wixData.get('Owners', ownerId, options).then ( owner => {
+        dynamicEmail('info@sakamoto.com', owner.wixUserEmail, "A new booking!!", "Boooking confirmed", false, 'confirmBooking', dynamicJson); // this send the email from sendGrid  
+    })
+}
+
+
+export function getVillaData (villaId) {
+    return wixData.query('Villas')
+    .include('city')
+    .eq('_id', villaId)
+    .find(options).then( (villa) => { 
+        console.log(villa, 'villa found')
+        const {damageDeposit, title, city, owner, mainPic, turisticLicence='Pending', _id} = villa.items[0];
+        //const nameNoSpace = title.replace(/\s+/g, '-')
+        const link = "https://www.sakamoto.com/one-villas-for-rent-marbella-puerto-banus?villa=" + _id;
+        return { 
+            damageDeposit: damageDeposit,
+            villaName: title,
+            city: city.title,
+            ownerId: owner,
+            pic: mainPic,
+            turisticLicence: turisticLicence,
+            link: link
+        }
+    });
+}
+
+
+// export async function insertInvoice (payment) {
+//  console.log(payment,' the obj to take the data for invoice')
+//  let {_id, booking, paymentFee, vatPerc, plusVatCommission, vatOncommission=0, description='', metadata, checkinDate, payer={}, isCash=false} = payment;
+//  if (paymentFee > 0) {
+//      metadata.payerData = payer;
+//  const invoiceData = {
+//      paymentId: _id, 
+//      bookingId: booking,
+//      vatPerc: vatPerc, 
+//      vatAmount: vatOncommission, 
+//      description: description, 
+//      metadata: metadata, 
+//      plusVatCommission: plusVatCommission,
+//      totalSum: paymentFee,
+//      checkinDate: checkinDate,
+//      payer: payer,
+//      isCash: isCash,
+//  }
+//  const invoiceId = await pendingInvoice(invoiceData);
+//  return invoiceId;
+//  } else {
+//      'no invoice is needed';
+//      return 'No invoice for this payment. zero to agent';
+//  }       
+// }
+
+// export async function pendingInvoice(invoiceData) { // we do not add number and date and that will be created automatically on date or manually
+// console.log(invoiceData, 'obj pssed to the pending invoice funtion')
+// let {paymentId, bookingId, totalSum, checkinDate, vatOncommission, description, metadata, plusVatCommission, ownerId, totalNetPaid, vatPerc} = invoiceData;
+//  let today = new Date();
+//  const lastInvoiceNum = await getLastInvoice();
+//  const thisInvoice = Number(lastInvoiceNum + 1);
+//  if (today >= checkinDate) {
+//      var pending = null;
+//      var invoiceDate = today;
+//      var invoiceNumber = thisInvoice;
+//      var title = thisInvoice.toString()
+//  } else {
+//      pending = true;
+//      invoiceDate = checkinDate;
+//      invoiceNumber = null;
+//      title = 'pending';
+//  }
+//  // ALERT DON'T MODIFY THE OWNER ID IN THE OWNERS COLLECTION FOR NAMASTEE
+//  if (ownerId === '4d9da1d6-b324-4e70-bac2-b1bc6a2ea26b') {//if Namastee so myself make full payment invoice and not just fee
+//      totalSum = totalNetPaid;
+//  }
+//  if (plusVatCommission === true) {
+//      let taxableFloating = Number(totalSum / (100 + vatPerc) * 100);
+//      var taxable = Math.round(taxableFloating * 100)/100; 
+//      //console.log(taxable, 'taxable back to number and typeof', typeof taxable);
+//      var vatAmount = Math.round((totalSum - taxable)*100)/100;
+//  } else {
+//      taxable = totalSum;
+//      vatAmount = 0;
+//      vatOncommission = 0;
+//  }
+
+//  let toInsert = {
+//      'title': title,
+//      'contract': bookingId,
+//      'payment': paymentId,
+//      'totalSum': totalSum, // total agentFee and it includes VAT but it doesn't include stripe fee because paid by owner  
+//      'taxable': taxable,
+//      'vatPerc': vatPerc,
+//      'vatAmount': vatAmount,
+//      'pending': pending,
+//      'invoiceDate': invoiceDate,
+//      'description': description,
+//      'payer': metadata,
+//      'invoiceNumber': thisInvoice,
+//  };
+//  return wixData.insert("Invoices", toInsert, options)
+//      .then( (invoice) => {
+//          //console.log(invoice, 'invoice created after payment created');
+//          return invoice._id;
+//      })
+//      .catch((err) => {
+//          let errorMsg = err;
+//      });
+// }
+
+// export function getLastInvoice() {
+//  return wixData.query("Invoices")
+//      .descending('invoiceNumber')
+//      .find(options)
+//      .then((results) => {
+//          //console.log(results, 'invoices found')
+//          if (results.items.length > 0) {
+//              let lastInvoice = results.items[0]; //see item below
+//              let invoiceNum = lastInvoice.invoiceNumber;
+//              //console.log(invoiceNum, "invoiceNumber");
+//              return invoiceNum
+//          } else {
+//              return 0;
+//          }
+//      })
+//      .catch((err) => {
+//          let errorMsg = err;
+//      });
+// }

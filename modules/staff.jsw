@@ -1,0 +1,524 @@
+import wixData from 'wix-data';
+import {queryBookingDashboardStaff, countCheckin, countCheckout, findCheckinBooked} from 'backend/agentDashboard.jsw';
+import wixUsersBackend from 'wix-users-backend';
+
+var options = {
+"suppressAuth": true,
+};
+
+export async function startStaff (days) {
+    const staffMember = await getStaffMember();
+    // console.log(staffMember, 'staffMember');
+    const argumentsObj = {
+        days:days, 
+        agentId: staffMember.agent._id, 
+        agentPic: staffMember.agent.agentPic,
+        agentName: staffMember.agent.title,
+        staffMember: staffMember.title
+    }
+    return basicDashboardStaff(argumentsObj).then(data => {return data;});
+}
+
+async function getStaffMember () {
+    let user = await wixUsersBackend.currentUser;
+    var email = await user.getEmail();
+    // console.log(email, 'user');
+    return wixData.query('Staff')
+    .eq('email', email)
+    .include('agent')
+    .find(options).then( results => {
+        // console.log(results.items[0], 'staff member with agent');
+        if(results.items.length > 0) {
+            results.items[0].isStaff = 'yep';
+            return results.items[0];
+        }
+        else { return {isStaff:'nope'}}
+    })
+}
+
+export async function basicDashboardStaff (argumentsObj) {
+    let {days, agentId, agentName, staffMember, agentPic} = argumentsObj;
+    let checkIn = new Promise( (resolve, reject) => {
+        resolve(countCheckin(agentId, days)); // get total days, total revenues, booking num
+        });
+    let checkOut = new Promise( (resolve, reject) => {
+        resolve(countCheckout(agentId, days));
+        });
+    return Promise.all([checkIn, checkOut]) 
+    .then( ( (results) => {
+        // console.log(results, 'promise all final step');
+            return {
+            agent: agentName, // agent data
+            staffMember: staffMember,
+            agentPic: agentPic,
+            checkIn: results[0], // //checkin in the timeframe and if the checkin was booked plus the payments
+            checkOut: results[1], // checkout in the timeframe and if we need to clean
+        }
+    }))
+}
+
+export async  function searchBookingStaff (searchValue) {
+    let staffMember = await getStaffMember ();
+    let agentId = staffMember.agent._id;
+    return queryBookingDashboardStaff (searchValue, agentId).then( data => {return data});
+}
+
+export async function getCheckOut (contractId) {
+    // let staffMember = await getStaffMember ();
+    // let agentId = staffMember.agent._id;
+    let checkOut = new Promise( (resolve, reject) => {
+        resolve(getCheckoutObj(contractId)); // get total days, total revenues, booking num
+        });
+    
+    return checkOut.then( ( (checkoutObj) => {
+        // console.log(checkoutObj, 'checkputObj');
+        return checkoutObj
+        //  return {
+        //  checkinBooked: checkoutObj,
+        //  welcomePack: []
+        // }
+    }))
+    .catch( (err) => {
+            console.log(err, 'error');
+            return err;
+    } );
+}
+// feeOnOwner: 0
+// _id: "8573c793-27a2-44b9-b44f-4217e1fd211d"
+// _owner: "d545168c-7e44-4366-a704-b700f57c141b"
+// _createdDate: "Sat Mar 27 2021 17:34:48 GMT+0100 (Central European Standard Time)"
+// _updatedDate: "Thu May 06 2021 09:30:40 GMT+0200 (Central European Summer Time)"
+// priceLateOut: 0
+// feePlusStaff: 0
+// totalDue: 0
+// owner: "5f40c858-78bd-44a0-b6ab-fc313dd69e91"
+// checkoutTime: "12:00"
+// staffAmount: 0
+// priceEarlyIn: 0
+// checkinTime: "16:00"
+// booking: "9c6b5e93-b25e-4cd0-b4c5-9858e763cdb8"
+// cashPayment: true
+
+function getCheckoutObj (contractId) {
+    return wixData.query('CheckInOut').eq('booking', contractId).find(options).then(results => {
+        let {checkinTime, checkoutTime, totalDue} = results.items[0];
+        if (results.totalCount > 0) {
+            let obj = {
+                booked: true,
+                checkinTime: checkinTime,
+                checkoutTime: checkoutTime,
+                totalDue: totalDue
+            }
+            return obj;
+        } 
+        else {
+            return {
+                booked: false,
+                checkinTime: checkinTime,
+                checkoutTime: checkoutTime,
+                totalDue: totalDue
+            }
+        }
+    })
+    .catch( (err) => {
+            console.log(err, 'error')
+            return err;
+    } );
+}
+
+import {contractStaff} from 'backend/agents'; 
+
+export async function allContractStaff (data) {
+    // let {fromDate, toDate, villaId} = data;
+    let staffMember = await getStaffMember ();
+    data.agentId = staffMember.agent._id;
+    let fullcontracts = await contractStaff(data);
+    return fullcontracts;
+}
+
+
+export async function populateVillasStaff () {
+    let staffMember = await getStaffMember ();
+    let agentId = staffMember.agent._id;
+    return wixData.query('Villas')
+    .eq('agent', agentId)
+    .limit(999)
+    .ascending('title')
+    .find(options)
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let allItems = [{
+                label: 'All villas',
+                value: 'all',
+                pic: 'https://static.wixstatic.com/media/e20929_d13511f8cd7b47928bc073b1aef6f314~mv2.png',
+            }];
+            let items = results.items;
+            items.forEach((item) => {
+                let oneItem = {
+                    label: item.title,
+                    value: item._id,
+                    pic: item.mainPic,
+                }
+                allItems.push(oneItem);
+            })
+            //allItems.unshift({label: "All", value: "all", pic: 'https://static.wixstatic.com/media/e20929_d13511f8cd7b47928bc073b1aef6f314~mv2.png'});
+            return allItems;
+        } 
+        return null;
+    })
+}
+
+export async function findCheckin (contractId) {
+    let checkin = await findCheckinBooked(contractId);
+    return checkin;
+}
+
+import {mapOrder} from 'backend/services.jsw';
+import {getMyMember} from 'backend/leaders.jsw';
+
+export async function getServicesFrontend () {
+    const memberId = await getMyMember();
+    const services = await getServices (memberId);
+    let obj = {
+            servicesArray: services,
+            member: memberId,
+        }
+    return obj;
+}
+
+export async function getServices (memberId) {
+    const today = new Date();
+    const yesterday = new Date(+today + 8.64e+7);
+    console.log(yesterday, 'yesterday');
+    return wixData.query('Orders')
+    .eq('member', memberId)
+    .ge('deliveryDateFomat', yesterday)
+    .ne('delivered', true)
+    .include('service') 
+    .find(options)
+    .then(async results => {
+        console.log(results, results.items, 'results, results.items');
+        if (results.items.length > 0) {
+            let mapped = await mapOrder(results.items);
+            return mapped;
+        } 
+        else { 
+            console.log('no orders')
+            return [];
+        }
+    })
+}
+
+
+export async function getPaymentsOrderStaff(order) {
+    //console.log(payWhat, 'payWhat');
+    let pay = await wixData.query("Payments")
+    .eq("order", order)
+    // .eq('payWhat', 'service')
+    .find(options)
+    return pay.items.map((item) => {
+        return {
+            "_id": item._id,
+            "payment": item.title,
+            "payDate": item.payDate,
+            "totalGrossPaid": item.totalGrossPaid,
+            "payMethod": item.payMethod,
+            'totalGrossPaidOwner': item.ownerGross,
+            'netPaid': item.ownerNet,
+            'payWhat': item.payWhat,
+            'order': item.order,
+            'agentPayment':item.paymentFee
+        };
+    });
+}
+
+export async function amendNotes (contractId, property, value) { 
+    let staffMember = await getStaffMember ();
+    let agentId = staffMember.agent._id;
+    return wixData.get('Contracts', contractId, options).then( contract => {
+        if (contract.agent === agentId) {
+        // if property is checkIn or checkOut then change the nights num
+        if (property === 'staffNote') {
+            contract.staffNote = value;
+        }
+        else if (property === 'clientNote') {
+            contract.clientNote = value;
+        }
+        return wixData.update('Contracts', contract, options).then( updated => {
+            console.log('updated');
+            return 'updated';
+        })
+        } else {
+            return 'not allowed';
+        }
+    })
+    .catch( (err) => {
+            console.log(err, 'error')
+            return 'error';
+    } );
+}
+
+export async function getNotes (contractId) {
+    const staffMember = await getStaffMember ();
+    const agentId = staffMember.agent._id;
+    return wixData.get('Contracts', contractId, options).then( async contract => {
+        let {staffNote = 'None', clientNote = 'None'} = contract;
+        if (contract.agent === agentId) {
+        // if property is checkIn or checkOut then change the nights num
+        let notes = { 
+            staffNote: staffNote,
+            clientNote: clientNote
+        }
+        return notes;
+        }
+    })
+    .catch( (err) => {
+            console.log(err, 'error')
+            return 'error';
+    } );
+}
+
+export async function checkPermission () {
+    let user = await wixUsersBackend.currentUser;
+    var email = await user.getEmail();
+    // console.log(email, 'user');
+    return wixData.query('Staff')
+    .eq('email', email)
+    .include('agent')
+    .find(options).then( results => {
+        // console.log(results.items[0], 'staff member with agent');
+        if (results.totalCount > 0) {return true;} else {return false}
+    })
+}
+
+export async function saveCheckinStaff(data) {
+    const staffMember = await getStaffMember ();
+    const agentId = staffMember.agent._id;
+    return wixData.query('Contracts')
+    .include('member')
+    .eq('_id', data.checkinObj.booking)
+    .find(options)
+    .then( results => {
+        let contract = results.items[0];
+        if (contract.agent === agentId) {
+            data.checkinObj.customerName = contract.member.firstName;
+            data.checkinObj.customerEmail = contract.member.title;
+            data.checkinObj.checkIn = contract.checkIn;
+            data.checkinObj.checkOut = contract.checkOut;
+            data.checkinObj.owner = contract.owner;
+            data.checkinObj.totalDue > 0 ? data.checkinObj.payMethod = "Cash upon arrival" : data.checkinObj.payMethod = 'No payment due';
+            return goToSave(data).then( response => {return response});
+        }
+        else {return 'not allowed'}
+    })
+}
+
+
+
+function goToSave (data) {
+    let {checkinObj, isAnUpdate, sendEmailBool} = data;
+    if (isAnUpdate === true) {
+        return wixData.get('CheckInOut', checkinObj._id, options)
+        .then(checkin => {
+            return wixData.update('CheckInOut', checkinObj, options)
+            .then( updated => {
+                if (sendEmailBool === true) {sendEmailCheckinStaff(checkinObj);} 
+                return 'updated';
+                })
+            .catch( (err) => {
+                console.log(err, 'error')
+                return 'error';
+            } );
+        })
+    } 
+    else{
+        return wixData.insert('CheckInOut', checkinObj, options)
+        .then( updated => {
+            if (sendEmailBool === true) {sendEmailCheckinStaff(checkinObj);} 
+            return 'updated';
+            })
+            .catch( (err) => {
+                console.log(err, 'error')
+                return 'error';
+            } );
+    }
+}
+
+const optionsDateEmail = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+
+
+import {dynamicEmail} from 'backend/sendGrid';
+
+function sendEmailCheckinStaff (checkinObj) {
+    let {customerName, checkIn, checkOut, checkinTime, checkoutTime, customerEmail, payMethod, totalDue} = checkinObj;
+    console.log(checkIn, checkOut, 'in and out');
+    const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail);
+    const checkOutString = checkOut.toLocaleDateString('en-GB', optionsDateEmail);
+    let dynamicJson = {
+        "name":customerName,
+        "inDay": checkInString,
+        "inTime": checkinTime.slice(0, 5),
+        "outDay": checkOutString,
+        "outTime": checkoutTime.slice(0, 5),
+        "extraAmount": totalDue.toString(),
+        "amountPaid": '0',
+        "method": payMethod,
+        'balance': totalDue.toString(),
+    }
+    console.log(customerEmail, dynamicJson, 'email, dynamicJson');
+    dynamicEmail('info@sakamoto.com', customerEmail, "Great, Check-in registered!", "Check-in confirmed", true, 'checkinEmail', dynamicJson);
+}
+
+
+export async function getDamagePaid (contractId) {
+    let payments = await getDamagePay (contractId);
+    console.log(payments, payments.length, 'payments');
+    if (payments.length > 0) {
+        let totPaid = payments.reduce( ( sum, { paidEur=0 } ) => sum + paidEur , 0);
+        let totRefunded = payments.reduce( ( sum, { refundEur=0 } ) => sum + refundEur , 0);
+        let totCharged = payments.reduce( ( sum, { damageToChargeEur=0 } ) => sum + damageToChargeEur , 0);
+        console.log(totPaid, totRefunded, totCharged, 'totPaid, totRefunded, totCharged');
+        let paymentArray = await mapPayments(payments);
+        console.log(paymentArray, 'array returned from map');
+        return {
+            totDamagePaid: totPaid,
+            refunded: totRefunded,
+            damageCharged: totCharged,
+            paymentsArray: paymentArray[0], // it's an array
+            damagesArray: paymentArray[1]
+        }
+    } 
+    else {
+        return {
+            totDamagePaid: 0,
+            refunded: 0,
+            damageCharged: 0,
+            paymentsArray: [],
+            damagesArray: []
+        }
+    }
+}
+
+function getDamagePay (contractId) {
+    console.log(contractId, 'FUCKING ID');
+    return wixData.query('damagePayment')
+    .eq('booking', contractId)
+    .ascending('payDate')
+    .find(options)
+    .then( results => {
+        console.log(results, 'results for payments');
+        if(results.totalCount > 0) {return results.items} else {return [];}
+    })
+}
+
+// const optionsDate = {
+//  day: "numeric",
+//  month: "short",
+//  year: "numeric"
+// };
+
+
+//return newArray
+function mapPayments (array) {
+    let p1 = new Promise( (resolve, reject) => {
+        let newArray = [];
+        let damageArray = [];
+        array.forEach( (pay, index) => {
+            let {paidEur=0, refundEur=0, damageToChargeEur=0, payDate, isDamageItem=false} = pay;
+            //start payment array
+            let payObj = {
+                _id:pay._id,
+                payDate: payDate //.toLocaleDateString('en-GB', optionsDate)
+            };
+            if (paidEur > 0) {
+                payObj.whatPaidFor = 'Deposit'; 
+                payObj.amount = paidEur;
+            }
+            else if (refundEur > 0) {
+                payObj.whatPaidFor = 'Refund'; 
+                payObj.amount = refundEur;
+            }
+            else if (damageToChargeEur > 0) {
+                payObj.whatPaidFor = pay.title; 
+                payObj.amount = damageToChargeEur
+            }
+            newArray.push(payObj);
+            // start damages array
+            if(isDamageItem === true) {
+                let damage = {
+                    _id: pay._id,
+                    title: pay.title,   
+                    damageDescription: pay.damageDescription,
+                    galleryDamage: pay.galleryDamage,
+                    damageToChargeEur: pay.damageToChargeEur
+                }
+                damageArray.push(damage);
+            }
+            // return if done with forEach loop
+            if (index === (array.length-1)) { 
+                console.log('end of loop newArray, damageArray', newArray, damageArray);
+                resolve ([newArray, damageArray]);
+            }
+        })
+    });
+    return p1.then( (array) => {
+        console.log(array, 'array final');
+        return array
+    })
+}
+
+
+export async function saveDamage (data) {
+    console.log(data, 'obj to insert');
+    let staffMember = await getStaffMember ();
+    const agentId = staffMember.agent._id;
+    return checkPermissionContract(agentId, data.booking)
+    .then( authResponse => {
+        if(authResponse === true) {
+            return wixData.insert('damagePayment', data, options)
+            .then( inserted => {return 'updated'})
+        } else { return 'not allowed';}
+    })
+    .catch( (err) => {
+        console.log(err, 'error')
+        return 'error';
+    } );
+}
+
+
+function checkPermissionContract (agentId, contractId) {
+    // console.log(agentId, contractId, 'agentId, contractId')
+    return wixData.get('Contracts', contractId, options).then( contract => {
+        // console.log(contract.agent === agentId, contract, 'contract.agent === agentId, contract')
+        if (contract.agent === agentId) {return true;}  else {return false;}
+    })
+}
+
+
+export async function returnPermissionLevel () {
+    let staffMember = await getStaffMember ();
+    console.log(staffMember, 'staffMember');
+    if(staffMember?.permissionLevel === 'write') {
+        return 'write';
+    } 
+    else if (staffMember?.permissionLevel === 'read') {return 'read';}
+    else {return 'not Staff';}
+}
+
+// title    
+// _id  Owner   
+// booking  
+// paidEur  
+// refundEur    
+// payMethod    
+// isCaptured   
+// damageDescription    
+// damagePic1   
+// damagePic2   
+// damagePic3
+// galleryDamage
+// isDamageItem 
+// damageToChargeEur    
+// note 
+// signature    
+// payDate

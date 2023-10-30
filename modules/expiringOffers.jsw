@@ -1,0 +1,161 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+
+var options = {
+    "suppressAuth": true,
+    //"suppressHooks": true,
+};
+
+// push each inquiry only once given there are many offers for same inquiry
+function arrayOfInquiries (offersArray) {
+    let counter=0;
+    let p1 = new Promise( (resolve, reject) => {
+        let onlyInquiryId = [];
+        offersArray.forEach( (offer, index) => {
+            if (index === 0) {
+                onlyInquiryId.push(offer.inquiry);
+            } 
+            else {
+                let check = onlyInquiryId.findIndex(offer.inquiry);
+                if (check === -1) {
+                    onlyInquiryId.push(offer.inquiry);
+                }
+            }
+            counter++;
+            if (counter===offersArray.length) {
+                resolve(onlyInquiryId); 
+            }
+        });
+    });
+    return p1.then( inquiriesArray => {return inquiriesArray});
+}
+
+export async function findExpiring () {
+    let offers = await searchExpiring();
+    if (offers.length > 0) {
+        let arrayInquiresId = await arrayOfInquiries(offers);
+        console.log(arrayInquiresId, 'inquiries id');
+        sendEmail(arrayInquiresId);
+    } else {
+        console.log('no expiring offers');
+    }
+}
+
+function sendEmail(arrayInquieiresId) {
+    arrayInquieiresId.forEach( async inquiry => {
+        let offersObj = await findOffersOneInquiry(inquiry);
+        let {name, offers, customerEmail, error} = offersObj;
+        if(error !== null) {
+            if(offers.length > 0) {
+                let dynamicJson = {
+                    name: name,
+                    offer: offers,
+                }
+                console.log('info@sakamoto.com', customerEmail, "Hurry up. The offers expires soon!", "Offer is expring", false, 'expiringOffers', dynamicJson)
+                //dynamicEmail('info@sakamoto.com', offersObj.customerEmail, "Hurry up. The offers expires soon!", "Offer is expring", false, 'expiringOffers', dynamicJson); // this send the email from sendGrid    
+                dynamicEmail('info@sakamoto.com', customerEmail, "Hurry up. The offers expires soon!", "Offer is expring", false, 'expiringOffers', dynamicJson);       
+            //              fromEmail,            toEmail,         subjectString,            sendingFunction,   booleanIfToAdmin,templateId,    JSON
+            }
+        }
+        else { console.log('manage error');}
+    })
+}
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+// map with usefull data
+function setupOfferObj (offersArray) {
+    return offersArray.map( (item) => {
+        let { villaName, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, upFront, balance, balanceDate, secondPay=0, secondPayDate} = item;
+        if(+secondPay < 1) {
+            secondPayDate=null;
+            secondPay = null;
+            var secondDateLabel = null;
+            var secondPaymentLabel = null;
+        }
+        else {
+            secondPayDate = secondPayDate.toLocaleDateString('en-GB', optionsDate);
+            secondDateLabel = '2nd Pay due on: ';
+            secondPay = '€'+secondPay;
+            secondPaymentLabel = '2nd Pay amount: ';
+        }
+        let balanceDateString = balanceDate.toLocaleDateString('en-GB', optionsDate);
+        return {
+        "villaName": villaName,
+        "checkin": checkIn.toLocaleDateString('en-GB', optionsDate),
+        "checkout": checkOut.toLocaleDateString('en-GB', optionsDate),
+        "nights": nightsNumber.toString(),
+        "guests": guestNumber.toString(),
+        "price": totalPriceIclProcesssing.toString(),
+        "upfront": upFront.toString(),
+        "secondPaymentLabel": secondPaymentLabel,
+        "secondPay": secondPay,
+        "secondDateLabel": secondDateLabel,
+        "secondPayDate": secondPayDate,
+        "balance": balance.toString(),
+        "balanceDateString": balanceDateString,
+        //'policy': policy,
+        }
+    })
+}
+
+
+function findOffersOneInquiry (inquiryId) {
+    return wixData.query("Offers")
+    .eq("inquiry", inquiryId)
+    .include('member')
+    .find(options)
+    .then( async (results) => {
+        let offers = results.items;
+        if(offers.length > 0) {
+            let mapped = await setupOfferObj(offers);
+            let {firstName='Guest', title} = offers[0].member
+            return {
+                name: firstName,
+                customerEmail: title,
+                offers: mapped,
+                error: null 
+            };
+        } else {
+            console.log('no results');
+            return {error: null, offers: [], name: null, customerEmail: null};
+        }
+    } )
+    .catch( (err) => {
+        let errorMsg = err;
+        return {error: err, offers: [], name: null, customerEmail: null}
+    } );
+}
+
+
+// search offer expriing on the day
+function searchExpiring () {
+    let today = new Date();
+    let yesterday = new Date((today.getTime() - 8.64e+7));
+    let tomorrow = new Date((today.getTime() + 8.64e+7));
+    //today = > yasterday && < tomorrow
+    yesterday.setHours(23);
+    tomorrow.setHours(1)
+    return wixData.query("Offers")
+    .le("expirationDate", tomorrow)
+    .ge("expirationDate", yesterday)
+    .limit(999)
+    .find(options)
+    .then( (results) => {
+        if(results.items.length > 0) {
+        //console.log(results.items, 'results');
+            return results.items;
+        } else {
+            console.log('no results');
+            return [];
+        }
+    } )
+    .catch( (err) => {
+        let errorMsg = err;
+        return [err]
+    } );
+}
+
+
+
+

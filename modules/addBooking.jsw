@@ -1,0 +1,419 @@
+import wixData from 'wix-data';
+import {searchAgent} from 'backend/agents.jsw';
+import {dynamicEmail} from 'backend/sendGrid';
+import {setDatesAvailableCalendar} from 'backend/ical.jsw';
+import {payments} from 'backend/leaders'; 
+
+const options = {"suppressAuth": true,};
+
+export async function getVillasAddBooking() {
+    const agent = await searchAgent(); 
+    let allItems = [];
+    return wixData.query('Villas')
+    .eq('agent', agent[0])
+    .limit(999)
+    .ascending('title')
+    .find(options)
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let items = results.items;
+            items.forEach((villa) => {
+                let {title, _id, mainPic, owner, people, extraBeds, totGuests, comissionPercentage, cleningFee, extraBedPrice=0, bidCoins=0, agentDoCleaning=false, extraBedtoAgent=false} = villa
+                let oneItem = {
+                    label: title,
+                    value: _id,
+                    pic: mainPic,
+                    owner: owner,
+                    includedGuests: people,
+                    extraBeds: extraBeds,
+                    totGuests: totGuests,
+                    agentDoCleaning: agentDoCleaning,
+                    cleningFee: cleningFee,
+                    comissionPercentage: comissionPercentage,
+                    extraBedPrice: extraBedPrice,
+                    bidCoins: bidCoins,
+                    extraBedtoAgent: extraBedtoAgent,
+                    city: villa.city,
+                }
+                allItems.push(oneItem);
+            })
+            //allItems.unshift({label: "All", value: "all"});
+            return allItems;
+        } 
+        return null;
+        
+    })
+}
+
+import {sendEmailBooking} from 'backend/stripeElements.jsw';
+
+export async function saveUpdateOrInsert (obj, actionUpdateOrInsert) {
+    let villa = obj.villa;
+    const agent = await searchAgent();
+    //[4] = isAdminAgent bool
+    if (agent[4] === true) {
+        //console.log('agent is admin');
+        obj.isAdminAgent = true;
+    } else {obj.isAdminAgent = false}
+    //console.log(agent[4], obj.isAdminAgent, obj, 'agent[4, obj.isAdminAgent, obj')
+    const check = await checkMatchVillaAgent (agent[0], villa);
+    obj.agent = agent[0];
+    //console.log(check, agent, villa)
+    if (check.response === 'ok') {// this villa belongs to this agent
+        if (actionUpdateOrInsert === 'insert') { // 'insert' or 'update';
+            var inserted = await insertNewBooking(obj);
+            return inserted;
+        } else { // else 'update'
+            inserted = await updateBooking(obj);
+            return inserted;
+        }
+    } else { return 'Error'}
+}
+
+function insertNewBooking (obj) {
+    const {checkIn, checkOut, villa} = obj;
+    return queryAvailableForUpdate(checkIn, checkOut, villa, 'notAddingContractIdForNewInsertButOnlyWhenUpdate').then( response => {
+        if (response === 0) {
+            return wixData.insert('Contracts', obj, options).then( (inserted) => {
+                //console.log(results, 'results of insert booking then we add to calendar')
+                // email to customer 
+                let upFront = 'check the member area';
+                let balance = 'check the member area';
+                if (obj.sendEmail === true) {
+                    console.log('sending email for this booking');
+                    sendEmailBooking (obj, upFront, balance);
+                }
+                return ['BookingSaved', inserted._id];
+            } ) 
+            .catch( (err) => {
+                return ['Error', null];
+            } );
+        }
+        else {return ['Booked already', null];}
+    });
+}
+
+async function updateBooking (obj) {
+    console.log(obj, 'obj to start with');
+    obj.deleted = null;
+    let {sendEmail=false} = obj;
+    if ((obj.createdByAgent === true) || (obj.isAdminAgent === true)  ) { // yes the agent did this shit of contract so let him/her update and check in admin so can change whatver contract
+    //console.log('agent is creator or admin, so lets go')
+    //console.log('it is an update; lets start with updateBooking', obj)
+    return wixData.update('Contracts', obj, options).then( updatedContract => {
+        if (sendEmail === true) {
+            console.log('sending email for this booking');
+            sendEmailFunction(updatedContract);
+        }
+        return ['BookingSaved', updatedContract._id];
+    })
+    .catch( (err) => {
+            return ['Error', null];
+    } );
+    } else { return ['Agent not allowed to modify the contract', null];}
+}
+
+// ALERT VERSION WITHOUT HOOK
+// function insertNewBooking (obj) {
+//  return wixData.insert('Contracts', obj, options).then( (results) => {
+//          //console.log(results, 'results of insert booking then we add to calendar')
+//          // email to customer 
+//          let upFront = 'check the member area';
+//          let balance = 'check the member area';
+//          if (obj.sendEmail === true) {
+//              console.log('sending email for this booking');
+//              sendEmailBooking (obj, upFront, balance);
+//          }
+//          return updateCalAfterInsertOrUpdateBooking(results);
+//      } ) 
+//      .catch( (err) => {
+//          return err;
+//      } );
+// }
+
+// ALERT VERSION WITHOUT HOOK
+// async function updateBooking (obj) {
+//  console.log(obj, 'obj to start with');
+//  obj.deleted = null;
+//  let {sendEmail=false} = obj;
+//  let  bookingData = await getContractBeforeUpdate (obj._id);// obj data for contract before update
+//  console.log(bookingData, 'bookingData');
+//  let {checkIn, checkOut} = bookingData;
+//  if ((obj.createdByAgent === true) || (obj.isAdminAgent === true)  ) { // yes the agent did this shit of contract so let him/her update and check in admin so can change whatver contract
+//  //console.log('agent is creator or admin, so lets go')
+//  var originalCheckin = checkIn.getFullYear() + checkIn.getMonth() + checkIn.getDate();
+//  var originalCheckout = checkOut.getFullYear() + checkOut.getMonth() + checkOut.getDate();
+//  var newCheckin = obj.checkIn.getFullYear() + obj.checkIn.getMonth() + obj.checkIn.getDate();
+//  var newCheckout = obj.checkOut.getFullYear() + obj.checkOut.getMonth() + obj.checkOut.getDate();
+//  //console.log('it is an update; lets start with updateBooking', obj)
+//  return wixData.update('Contracts', obj, options).then( updatedContract => {
+//      //console.log(updatedContract, updatedContract._id, typeof updatedContract._id, 'updatedContract, updatedContract._id, typeof updatedContract._id')
+//      // reset the calendar to available and update the cal for the new dates 
+//      if (sendEmail === true) {
+//          console.log('sending email for this booking');
+//          sendEmailFunction (updatedContract);
+//      } 
+//      if (originalCheckin !== newCheckin || originalCheckout !== newCheckout) { // if dates are different, then updated calendar
+//          //console.log('dates different the same in the update');
+//  // ALERT before p1 to cancel because it could be similar slot so if before add then cancel you could fuck-up your new booking
+//      let p1 = new Promise( (resolve, reject) => {
+//          resolve(eraseOldBooking(bookingData)); // cancel dates calendar
+//      });
+//      //then p2 to add new dates
+//      let p2 = new Promise( (resolve, reject) => {            
+//      p1.then( (itemToUpdate) => {
+//          resolve(updateCalAfterInsertOrUpdateBooking(updatedContract)); // get total days, total revenues, booking num
+//      }) 
+//      .catch((err) => {
+//      //console.log(err, 'errorMsg');
+//      resolve(err);
+//      });    
+//      })  
+//      return p2.then( response => {return response});
+//      } 
+//      else { // dates are the same of before the update so no need to touch the calendar
+//          //console.log('Dates are the same so no Calendar update')
+//          return 'BookingSaved and Calendar updated';
+//      }
+//  })
+//  } else { return 'Agent not allowed to modify the contract'}
+// }
+
+async function sendEmailFunction (updatedContract) {
+    let payData = await checkPayments(updatedContract._id, updatedContract.totalPriceIclProcesssing);
+    //console.log(payData, 'payData', updatedContract, 'updated contract')
+    sendEmailBooking (updatedContract, payData.upFront, payData.balance);
+}
+
+
+function checkPayments (updatedContractId, totalPriceIclProcesssing) {
+    return payments(updatedContractId, 'bookingAndCheckin').then( async (allPayments) => {
+        if (allPayments.length > 0) {
+        let totaPaid = await calcTotPaid(allPayments);
+        return {
+            upFront: totaPaid,
+            balance: totalPriceIclProcesssing - totaPaid,
+        }
+        } else {
+            return {
+            upFront: 'check member area',
+            balance: 'check member area',
+            }
+            //sendEmailBooking (obj, upFront, balance);
+        }
+    })
+    .catch((error) => {
+        console.log(error, 'error calPayments then send email');
+    });
+}
+
+
+// function getContractBeforeUpdate (objId) {
+//  return wixData.get('Contracts', objId, options).then( contract => {
+//      // save the old dates to reset the calendar to available on those dates
+//      let {_id, checkIn, checkOut, nightsNumber, villa} = contract;
+//      let bookingData = {
+//          _id: _id,
+//          checkIn: checkIn,
+//          checkOut: checkOut,
+//          nightsNumber: nightsNumber,
+//          villa: villa, 
+//      } 
+//      return bookingData;
+//  })
+//  .catch( (err) => {
+//      console.log(err, 'error');
+//      return err;
+//  } );
+// }
+
+
+export function calcTotPaid (paymentsArray) {
+    let p1 = new Promise( (resolve, reject) => {
+        if(paymentsArray.length> 0) {
+            resolve( paymentsArray.reduce( ( sum, { totalGrossPaid=0 } ) => sum + totalGrossPaid , 0) );
+        } else {resolve(0);}
+    });
+    return p1.then(totPaid => {return totPaid})
+}
+
+
+// ALERT VERSION WITHOUT HOOK
+// function eraseOldBooking (dataToCancelOldBookingFromCalendar) {
+//  let cancelOldDates = new Promise( (resolve, reject) => {
+//                                  //let {_id, checkIn, checkOut, nightsNumber, villa} = dataToCancelOldBookingFromCalendar
+//      resolve(setDatesAvailableCalendar(dataToCancelOldBookingFromCalendar) ); // get total days, total revenues, booking num
+//  });
+//  return cancelOldDates.then( response => {return response});
+// }
+
+// function updateCalAfterInsertOrUpdateBooking (results) {
+//  let {_id, checkIn, nightsNumber, villa} = results;
+//  console.log(_id, checkIn, nightsNumber, villa, '_id, checkIn, nightsNumber, villa in add new dates to cal')
+//  return updateCal(checkIn, nightsNumber, _id, villa).then( response => { // save dates in calendar
+//      if (response === 'booking added') {
+//          console.log(response, 'if booking dates marked as booked on calendar')
+//          return 'BookingSaved and Calendar updated';
+//      } 
+//      else { return 'BookingSaved but Calendar NOT updated'}
+//  }) 
+//  .catch( (err) => {
+//      return err;
+//  } );
+// }
+
+function checkMatchVillaAgent (agent, villa) {
+    return wixData.get('Villas', villa, options).then (theVilla => {
+        if (theVilla.agent === agent) {
+            return {
+                response: 'ok', 
+            }; 
+            // send the email
+        } else { return {
+            response:'failed',
+            }
+        }
+    })
+}
+
+export async function getContractData (contractId) {
+    const fullAgent = await searchAgent();
+    const agentId = fullAgent[0];
+    const isAdminAgent = fullAgent[4];
+    return wixData.get('Contracts', contractId, options).then(fullContract => {
+        const {agent, createdByAgent} = fullContract;
+        if (isAdminAgent === true) {// admin can do whatever
+            return fullContract;
+        }
+        else if (agent === agentId && createdByAgent === true) { // if this agent's booking and this agent made the booking himself
+            return fullContract;
+        } else { return 'notAllowed'}
+    })
+}
+
+// this do not calculate the booking we are amending .ne('_id', contractId)
+export function queryAvailableForUpdate (start, end, villaId, contractId) {
+    console.log(start, end, villaId, 'start end villaid backned')
+    let p1 = new Promise( (resolve, reject) => {
+        if(start && end && villaId && contractId) {
+            wixData.query('Contracts')
+            .eq('villa', villaId)
+            .ne('deleted', true)
+            .ne('_id', contractId)
+            .and(   
+            wixData.query('Contracts')
+            .between("checkIn", start, end) // in between end & start
+                .or(
+                // if existing contract checkin falls within selected checkin & checkout date
+                wixData.query('Contracts')// enter before or on the same day of start and exit in after start
+                .le("checkIn", start)
+                .gt("checkOut", start)  // the check-out can be taken on another check-in day/ change over same day
+                )
+            )
+            .ascending("checkIn")
+            .count(options)
+            .then(async (number) => {
+            console.log(number, 'results search availability')
+                resolve(number);
+            } )
+            .catch( (err) => {
+                console.log(err);
+                resolve('error');
+            } );
+        }
+        else {resolve('error');}
+    });
+    return p1.then(response => {return response})
+}
+
+export async function deleteBooking (contractId, reason, penalty, sendEmail) {
+    console.log(contractId, reason, penalty, 'contractId, reason, penalty');
+    const fullAgent = await searchAgent();
+    const agentId = fullAgent[0];
+    const isAdminAgent = fullAgent[4];
+    return wixData.get('Contracts', contractId, options).then(fullContract => {
+        const {agent, createdByAgent} = fullContract;
+        if (isAdminAgent === true || (agent === agentId && createdByAgent === true)) {// admin can do whatever
+            fullContract.deleted = true;
+            fullContract.reason =reason;
+            fullContract.penalty =penalty;
+            return wixData.update('Contracts', fullContract, options).then( deleted => {
+                setDatesAvailableCalendar(fullContract);
+                if (sendEmail === true || sendEmail === 'true') {
+                    return sendEmailDeleted(deleted._id, reason, penalty).then(calResponse => {
+                        if (calResponse === 'cancelled') {
+                            return 'deleted';
+                        } else {
+                            return 'error'
+                        }
+                    })  
+                } else {return 'deleted';}
+            })
+        }
+        else { return 'notAllowed'}
+    })
+    .catch( (err) => {
+        console.log(err);
+        return err;
+    } );
+}
+
+const optionsDateEmail = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+
+export function sendEmailDeleted (contractId, reason, penalty) { //deleted booking
+    return wixData.query('Contracts')
+    .eq('_id', contractId)
+    .include('villa')
+    .include('member')
+    .include('owner')
+    .find(options)
+    .then( (results) => {
+        let booking = results.items[0];
+        console.log(booking, 'contract found to get data for email');
+        let {firstName, title, name} = booking.member;
+        let {checkIn, checkOut, _id, nightsNumber} = booking;
+        let  totalPriceIclProcesssing = booking.totalPriceIclProcesssing;
+        let {damageDeposit, city, ownerId} = booking.villa; 
+        const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail); 
+        const checkOutString = checkOut.toLocaleDateString('en-GB', optionsDateEmail);
+        const balanceDateString = booking.balanceDate.toLocaleDateString('en-GB', optionsDateEmail);
+        let dynamicJson = {
+            "name":firstName,
+            "tenant": name,
+            "reference": booking.title,
+            "villa": booking.villa.title,
+            "checkin": checkInString,
+            "checkout": checkOutString,
+            //"price": totalPriceIclProcesssing,
+            //"nights": booking.nightsNumber,
+            //"guests": booking.guestNumber,
+            'reason': reason,
+            'penalty': penalty,
+        }
+        console.log(dynamicJson, 'dynamicJSON email')
+        // email to customer 
+        dynamicEmail('info@sakamoto.com', title, "You booking has been cancelled!", "Boooking deleted", true, 'cancelBooking', dynamicJson); // this send the email from sendGrid          
+                        //fromEmail,           toEmail,         subjectString,   sendingFunction,   booleanIfToAdmin, templateId,   JSON
+        //email to owner ; easier the same to owner too
+        dynamicEmail('info@sakamoto.com', booking.owner.wixUserEmail, "You booking has been cancelled!", "Boooking deleted", false, 'cancelBooking', dynamicJson); // this send the email from sendGrid 
+        // set calendar available
+        let data = {
+            _id: _id, 
+            checkIn: checkIn, 
+            checkOut: checkOut, 
+            nightsNumber: nightsNumber, 
+            villa: booking.villa._id,
+        }
+        return setDatesAvailableCalendar (data).then(response => {return response})
+    })
+}
+
+export function getCleaningData (villaId)   {
+    return wixData.get('Villas', villaId).then(villa => { 
+        return {
+            agentDoCleaning: villa.agentDoCleaning,
+            cleningFee: villa.cleningFee
+        }
+    })
+}

@@ -1,0 +1,165 @@
+import wixData from 'wix-data';
+import {getMyMember} from 'backend/leaders.jsw'
+
+export function getOptions () {
+        return wixData.query('Welcome')
+        .ne('hide', true)
+        .limit(100)
+        .find()
+        .then( (results) => {
+                let options = results.items;
+                return options.map( (option) => {
+                        let optionObj = {
+                                _id: option._id,
+                                title: option.title,
+                                description: option.description,
+                                pic: option.pic,
+                                hedoPrice: option.dollerPrice,
+                        }
+                        return optionObj;
+                })
+        })
+}
+
+var options = {
+        "suppressAuth": true,
+};
+
+export async function getHedoDollars (bookingId) {
+ const memberId = await getMyMember();
+ console.log(memberId, 'memberId');
+ let today = new Date();
+ return wixData.query('Contracts')
+ .eq('member', memberId)
+ .eq('_id', bookingId)
+ .find(options)
+ .then ( (results) => {
+         console.log(results, 'all results for booking')
+         if (results.items.length === 1) {
+                 console.log(results.items[0].bidCoins, 'hedodollars for 1 booking');
+                 let welcome = results.items[0].welcomePack;
+                 if (!welcome) { welcome = []}
+                 let bookingData = {
+                         _id: results.items[0]._id,
+                         hedoDollars: results.items[0].bidCoins,
+                         pack: welcome,
+                 }
+                 return bookingData;
+         }  
+         else {
+                 return [];
+         }
+ })
+}
+
+// Alert check not overSpending
+export async function saveWelcome (bookingId, packArray, bool) {
+        const memberId = await getMyMember();
+        return wixData.get('Contracts', bookingId, options)
+        .then( async (item) => {
+                console.log(item, 'contract to save the welcome in');
+                if (item.member === memberId) {
+                        let checkResponse = await checkSpending(packArray, item.bidCoins);
+                        if (checkResponse === 'spendingOk') {
+                                item.welcomePack = packArray;
+                                return wixData.update('Contracts', item, options)
+                                .then( (updated) => {
+                                        console.log(updated, 'updated');
+                                        updated.packArray = packArray;
+                                        if(bool===true) {sendEmail(updated);}
+                                        return 'saved';
+                                })
+                        }
+                        else {
+                                return 'overSpending';
+                        }
+                                
+                } else {return 'not the member';}
+        })
+        .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+  } );
+}
+
+
+// ALERT YOU SHOULD DO A PROPER CHECK IN CASE THEY HACK FRON END SO CALCULATE WITH SERVICE PRICE FROM DATA BASE AND NOT SERVICE PRICE RECEIVED FROM FRONTEND
+function checkSpending (pack, totalHedoDollars) {
+        let p1 = new Promise( (resolve, reject) => {
+                //console.log('running p1')
+                let total = 0;
+                let itemNum = pack.length;
+                let loopNum = 0;
+                if (pack.length > 0) {
+                        pack.forEach( (item) => {
+                        total = total + item.totalDollars;
+                        loopNum++;
+                        if (loopNum === itemNum) {
+                                resolve(total);
+                        }
+                })
+                }
+                else { resolve(total);}
+                
+        });
+        return p1.then( (totalSpent => {
+                if (totalSpent <= totalHedoDollars) {
+                        return 'spendingOk';
+                } 
+                return 'overSpending';
+        }))
+}
+
+const optionsDateEmail = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+import {dynamicEmail} from 'backend/sendGrid';
+
+async function sendEmail (contractObj) {
+        let {email, name, checkIn, packArray, villaName} = contractObj;
+        let packText = await setupPackText(packArray);
+        console.log(packText, 'packtext for sendGrid');
+        const checkInString = checkIn.toLocaleDateString('en-GB', optionsDateEmail);
+        let dynamicJson = {
+                "name":name,
+                "villaName": villaName,
+                "customerEmail": email,
+                "checkin": checkInString,
+                "pack": packText,
+                }
+        console.log(email, dynamicJson, 'email, dynamicJson');
+        dynamicEmail('info@sakamoto.com', email, "The welcome pack is noted!", "welcome pack selection", true, 'welcomePack', dynamicJson); // this send the email from sendGrid          
+      //                                fromEmail,                    toEmail,         subjectString,                sendingFunction,   booleanIfToAdmin,templateId,    JSON            
+}
+
+function setupPackText (packArray) {
+        return packArray.map( (item) => {
+                return {
+                        name: item.name,
+                        quantity: item.quantity.toString(),
+                        //price: item.price,
+                };
+        })
+}
+
+export function getPhoneCodes  () {
+        return wixData.query('countriesPhoneCodes').find(options).then(results => {
+                let item = results.items[0];
+                return item.arrayNamesCodes;
+        })
+}
+
+export function countriesDropdown () {
+        return wixData.query('Countries')
+        .limit(1000)
+        .find(options)
+        .then( async (results) => {
+                        let allCountries = await results.items.map( country => {
+                                let {_id, title, alpha2} = country;
+                                return {
+                                        //_id: _id,
+                                        label: title,
+                                        value: alpha2,
+                                }
+                        })
+                        return allCountries;
+                })
+}

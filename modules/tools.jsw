@@ -1,0 +1,1002 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+var options = {
+"suppressAuth": true,
+};
+
+var optionsNoHook = {
+    "suppressAuth": true,
+    "suppressHooks": true,
+};
+
+// export function amendMember (indexMin, indexMax) {
+//     wixData.query('MyMembers')
+//     .limit(999)
+//     .find(optionsNoHook)
+//     .then( (results) => {
+//         console.log(results.totalCount, 'total count');
+//         results.items.forEach( (member, index) => {
+//             if(index >= +indexMin && index <= +indexMax) {
+//                 console.log(index, 'index in the range');
+//                 if(member.companyData !== null) {
+//                     console.log(member.title, 'this is companyData')
+//                     wixData.get('MyMembers', member._id, optionsNoHook)
+//                     .then((memberToUpdate) => {
+//                         memberToUpdate.isCompany = null;
+//                         memberToUpdate.companyData = null;
+//                         wixData.update('MyMembers', memberToUpdate, optionsNoHook)
+//                         .then ( () => { console.log('updated contract ref ' + memberToUpdate.title)});
+//                     });
+//                 }
+//             }
+//         });
+//     })
+//     .catch( (err) => {
+//         console.log(err, 'error');
+//     } );
+// }
+
+// export function populateFiltering (dataBase, filterField, filterValue) {
+//  let allItems = [];
+//  return wixData.query(dataBase)
+//  .eq(filterField, filterValue)
+//  .ascending('title')
+//  .find()
+//  .then((results) => {
+//  if (results.totalCount > 0) {
+//  let items = results.items;
+//  items.forEach((item) => {
+//  let oneItem = {
+//      label: item.title,
+//      value: item._id
+//  }
+//  allItems.push(oneItem);
+//  })
+//  return allItems;
+//  } 
+//  return null;
+//  })
+// }
+
+import {getMyFullMember} from 'backend/leaders';
+import {dynamicEmail} from 'backend/sendGrid';
+
+export async function addNotRepliedQuestion (toInsertKeyword) {
+    const fullMember = await getMyFullMember();
+    console.log(fullMember, 'fullMember');
+    const memberId = fullMember.memberId;
+    let toInsertObj = {
+        "title": toInsertKeyword,
+        "member": memberId
+    }
+    console.log("objToInsert", toInsertObj);
+    wixData.insert("searchKeywords", toInsertObj)
+    .then( (results) => {
+        let item = results; //see item below
+        const dynamicJson = {
+            name: fullMember.name + " " + fullMember.surname,
+            email: fullMember.email,
+            phone: fullMember.phone,
+            keyword: toInsertKeyword
+        }
+        dynamicEmail('info@sakamoto.com', "sakamoto@gmail.com", "Customer in trouble with FAQ!", "addNotRepliedQuestion", false, 'emailFAQNotReplied', dynamicJson); // this send the email from sendGrid          
+                        //fromEmail,           toEmail,                   subjectString,               sendingFunction,   booleanIfToAdmin, templateId,     JSON
+    } )
+    .catch( (err) => {
+        let errorMsg = err;
+    } );
+}
+
+export function populateDropdown(collectionName) {
+ let allItems = [];
+ return wixData.query(collectionName)
+  .ascending('title')
+  .find(options)
+  .then((results) => {
+      if (results.totalCount > 0) {
+          let items = results.items;
+          items.forEach((item) => {
+              let oneItem = {
+                  label: item.title,
+                  value: item._id,
+                }
+        allItems.push(oneItem);
+    })
+    return allItems;
+    } 
+    return null;
+    })
+}
+
+// to update one field for each of the collection
+export function updateFieldWithNewValue(collectionName, fieldToUpdate, updatedValue) {
+    return wixData.query(collectionName)
+    .find()
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let items = results.items;
+            items.forEach((item) => {
+                item[fieldToUpdate] = updatedValue;
+                wixData.update(collectionName, item).then((updatedItem) => {
+                    console.log(updatedItem);
+                })
+            })
+            return true;
+        } 
+        return false;
+        
+    })
+}
+
+//import {populateDropdownWithFilter} from 'backend/dashboardUtilities';
+export function populateDropdownWithFilter(collectionName,filterField,filterValue) {
+    let allItems = [];
+    return wixData.query(collectionName)
+    .eq(filterField,filterValue)
+    .find()
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let items = results.items;
+            items.forEach((item) => {
+                let oneItem = {
+                    label: item.title,
+                    value: item._id
+                }
+                allItems.push(oneItem);
+            })
+            allItems.unshift({label: "All", value: "all"});
+            return allItems;
+        } 
+        return null;
+        
+    })
+}
+
+function getHourMinute (villa) {
+    let inFrom = villa.checkinTime;
+            let inFromSplit = inFrom.split(':',2); // transform the string in array; : is the separator and 2 is the length of each string in the array
+            let inHour = inFromSplit[0];
+            let inMinute = inFromSplit[1];
+            let fourDigits = Number(inHour+inMinute);
+            console.log(inHour, inMinute, fourDigits);
+    let inTo = villa.checkinTimeTo;
+            let inToSplit = inTo.split(':',2);
+            let inToHour = Number(inToSplit[0]);
+            let inToMinute = Number(inToSplit[1]);
+            let fourDigitsTo = Number(inToHour+inToMinute);
+            console.log(inFromSplit, inToSplit, 'checkin from and to');
+            var checkinArray = [];
+            let slotToAdd = {
+                label: (inHour + ":" + inMinute).toString(),
+                value: (inHour + ":" + inMinute).toString()
+            }
+            checkinArray.push(slotToAdd)
+            console.log(checkinArray, 'checkinarray');
+    
+    for (var i = fourDigits; i < fourDigitsTo; i = i + 15) {
+        let slot = i.toString();
+        let slotSplit = slot.split(':',2); 
+        inHour = slotSplit[0];
+        inMinute = slotSplit[1];
+        slotToAdd = {
+                label: (inHour + ":" + inMinute).toString(),
+                value: (inHour + ":" + inMinute).toString()
+            }
+            
+    }
+}
+
+// callback function for arrayCalendar(date, daysNumber) we get the name of each day of the month from the number
+export function daysNumToNames (item) {  
+        let name;
+        if (item === 0) {
+            name = "Sun";
+        }
+        if (item === 1) {
+            name = "Mon";
+        }
+        if (item === 2) {
+            name = "Tue";
+        }
+        if (item === 3) {
+            name = "Wed";
+        }
+        if (item === 4) {
+            name = "Thur";
+        }
+        if (item === 5) {
+            name = "Fri";
+        }
+        if (item === 6) {
+            name = "Sat"
+        }       
+        return name;
+}
+
+// callback function for arrayCalendar(date, daysNumber) we get the name of each day of the month from the number
+function monthNumToNames (item) {  
+        let name;
+        if (item === 0) {
+            name = "January";
+        }
+        if (item === 1) {
+            name = "February";
+        }
+        if (item === 2) {
+            name = "March";
+        }
+        if (item === 3) {
+            name = "April";
+        }
+        if (item === 4) {
+            name = "May";
+        }
+        if (item === 5) {
+            name = "June";
+        }
+        if (item === 6) {
+            name = "July"
+        }    
+        if (item === 7) {
+            name = "August";
+        }
+        if (item === 8) {
+            name = "September";
+        }
+        if (item === 9) {
+            name = "October";
+        }
+        if (item === 10) {
+            name = "November";
+        }
+        if (item === 11) {
+            name = "December"
+        }      
+        return name;
+}
+
+
+
+export async function populateVillas() {
+    let allItems = [{label: 'All villas', value: ''}];
+    return wixData.query('Villas')
+    .eq('pubblished', true)
+    .eq('approvedByAdmin', true)
+    .ascending('title')
+    .find(options)
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let items = results.items;
+            items.forEach((item) => {
+                let oneItem = {
+                    label: item.title,
+                    value: item._id,
+                    pic: item.mainPic,
+                    people: item.people,
+                    bedrooms: item.bedrooms,
+                    extraBeds: item.extraBeds,
+                    score: item.score,
+                    scorePerc: item.scorePerc,
+                    }
+           allItems.push(oneItem);
+           })
+           return allItems;
+           } 
+        return null;
+    })
+}
+
+export async function populateYears() {
+let today = new Date();
+let year = today.getFullYear();
+let allYears = [];
+for (var i = 0; i < 3; i++) { 
+    let oneYear= {
+        label: year.toString(),
+        value: year.toString()
+    }
+    allYears.push(oneYear);
+    year = year + 1;
+}
+return allYears;
+}
+
+//price = formatter.format(price); // client side
+const formatter = new Intl.NumberFormat('en-GB', {
+  style: 'currency',
+  currency: 'EUR',
+  minimumFractionDigits: 2
+})
+
+export function populateTags () {
+let allItems = [];
+return wixData.query('FAQ')
+    .eq('question', 'categoryTags')
+    .limit(1)// so we stop immediately the search
+    .find(options)
+    .then((results) => {
+        if (results.totalCount > 0) {
+            let item = results.items[0];
+        console.log(item, 'items for tags');
+        let tags = item.tags
+        tags.forEach((tag) => {
+            let oneItem = {
+                label: tag,
+                value: tag,
+                }
+            allItems.push(oneItem);
+            })
+        console.log(allItems, 'allTag array');
+        return allItems;
+        } 
+        return null;
+        })
+}
+
+export function primaryTags () {
+return wixData.query('FAQ')
+  .eq('isPrimary', true)
+  .find(options)
+  .then((results) => {
+      let items = results.items;
+      return items;
+});
+}
+
+export async function refreshTags (tags) {
+    let toRefresh = await Promise.all(tags.map( async (tag) => {
+        let match = await queryEachTag(tag);
+        if (match !== 'none') {
+            return match[0]; 
+        }
+    }));
+    console.log(toRefresh, 'toRefresh');
+    return toRefresh;
+}
+
+function queryEachTag (tag) {
+    return wixData.query('FAQ')
+    .contains('question', tag)
+    .find(options)
+    .then((results) => {
+       let items = results.items;
+        if (items.length > 0) {
+            return items;
+        } else {
+            return "none";
+        }
+    });
+}
+
+export function getBedrooms () {
+    return wixData.query('Bedrooms').eq('villa', "247e2c13-5860-40aa-9528-64e43cbfbbd3").find()
+}
+
+export async function getBookingData () {
+    const fullMember = await getMyFullMember();
+    console.log(fullMember, 'fullMember');
+    if(fullMember.memberId) {
+        const memberId = fullMember.memberId;
+        return wixData.query("Contracts").eq("member", memberId).ge("checkIn", new Date()).include('villa').find(options).then( results => {
+            return results.items.map( contract => {
+                console.log(contract);
+                const {_id, checkIn, villa, address} = contract;
+                return {
+                "_id": _id,
+                "checkin": checkIn,
+                "address": address,
+                "villa": villa.title,
+                "villaId": villa._id
+                }
+            });
+        });
+    }
+    else {return ['notLoggedIn'];}
+}
+
+
+/*
+function getUserEmail  () {
+let user = wixUsersBackend.currentUser;
+let userId = user.id;    
+user.getEmail()
+  .then( (email) => {
+    let userEmail = email;    
+    return userEmail;
+  } );
+}
+*/
+
+// export async function refreshTags (tags) {
+//     let toRefresh = await Promise.all(tags.map( async (tag) => {
+//         let match = await queryEachTag(tag);
+//         if (match !== 'none') {
+//             let item = {
+//                 _id: match[0]._id,
+//                 description: match[0].description,
+//                 question: match[0].question,
+//                 pic: match[0].pic,
+//                 tags: match[0].tags,
+//                 link: match[0].link,
+//             }
+//             return item; 
+//         }
+//     }));
+//     console.log(toRefresh, 'toRefresh');
+//     return toRefresh;
+// }
+
+
+
+// export function subCategoryTags (value) {
+// console.log(value, 'value for second refine', typeof value)
+// let allItems = [];
+// return wixData.query('FAQ')
+//  .eq('question', value)
+//  //.eq('question', 'Booking')
+//   .limit(1)// so we stop immediately the search
+//   .find(options)
+//   .then((results) => {
+//     if (results.totalCount > 0) {
+//       let item = results.items[0];
+//       console.log(item, 'items for tags');
+//       let tags = item.tags
+//       tags.forEach((tag) => {
+//       let oneItem = {
+//           label: tag,
+//           value: tag,
+//       }
+//       allItems.push(oneItem);
+//       })
+//      console.log(allItems, 'allTag array');
+//       return allItems;
+//     } 
+//     return null; 
+//   })
+// }
+
+
+
+// export function subCategory (value) {
+// console.log(value, 'value for second refine', typeof value)
+// return wixData.query('FAQ')
+//  .eq('question', value)
+//  //.eq('question', 'Booking')
+//   .limit(1)// so we stop immediately the search
+//   .find(options)
+//   .then(async (results) => {
+//     if (results.totalCount > 0) {
+//       let item = results.items[0];
+//       console.log(item, 'items for tags');
+//       let tags = item.tags;
+//       let array = await arrayTags(tags);
+// console.log(array, 'array here')
+//       return array;
+// }
+//   })
+// }
+
+
+// async function arrayTags (tags) {
+//     let allItems = [];
+//     let i;
+//     for (i = 0; i < tags.length; i++) { 
+//     let tag = tags[i];
+//     console.log(i, tags[i], 'i, tags[i]');
+//     let oneItem = await oneTag(tag, i);
+//         if (oneItem) {
+//             oneItem._id = i.toString();
+//             allItems.push(oneItem);
+//         }  
+//         if (i === (tags.length - 1)) {
+//             console.log(i === (tags.length -1), 'equal so returning', allItems)
+//             return allItems;
+//         }  
+//     }
+//     }
+
+// function oneTag (tag) {
+// return wixData.query("FAQ")
+//   .eq('question', tag)
+//   .find()
+//   .then( (results) => {
+//     if(results.items.length > 0) {
+//         let item = results.items[0];
+//         //console.log('this was found', item);
+//         let oneItem = {
+//             title: item.question,
+//             pic: item.pic,
+//             description: item.description,
+//             link: item.link,
+//             //link2: tag.link2,
+//             //video: tag.video,
+//           }
+//     return oneItem;
+// } else {
+//     return null;
+// }
+//   } )
+//   .catch( (error) => {
+//     let errorMsg = error.message;
+//     let code = error.code;
+//   } );
+// }
+
+// export async function populateParties() {
+//   let allItems = [];
+//   return wixData.query('KindOfParties')
+//   .ascending('title')
+//   .find(options)
+//   .then((results) => {
+//     if (results.totalCount > 0) {
+//       let items = results.items;
+//       items.forEach((item) => {
+//         let oneItem = {
+//           label: item.title,
+//           value: item._id,
+//         }
+//         allItems.push(oneItem);
+//       })
+//       return allItems;
+//     } 
+//     return null; 
+//   })
+// }
+/*
+export function addElements () {
+    wixData.query('Contracts')
+    .include('villa')
+    .limit(999)
+    .find(options)
+    .then( (results) => {
+        results.items.forEach( (contract) => {
+            wixData.get('Contracts', contract._id, options)
+            .then((contractToUpdate) => {
+                contractToUpdate.agentDoCleaning = contract.villa.agentDoCleaning;
+                contractToUpdate.cleaningFee = contract.villa.cleningFee;
+                contractToUpdate.city = contract.villa.city;
+                wixData.update('Contracts', contractToUpdate, options)
+                .then ( () => { console.log('updated contract ref ' + contractToUpdate.title)})
+                .catch( (err) => {
+                    let errorMsg = err;
+                } );
+            })
+        })
+    })
+}
+
+export function amendPay () {
+    wixData.query('Payments')
+    .eq('owner', '4d9da1d6-b324-4e70-bac2-b1bc6a2ea26b')
+    //.include('owner')
+    .limit(999)
+    .find(options)
+    .then( (results) => {
+        results.items.forEach( (contract) => {
+            console.log(contract, contract._id);
+            wixData.get('Payments', contract._id, options)
+            .then((contractToUpdate) => {
+                console.log(contractToUpdate)
+                contractToUpdate.ownerGross = contractToUpdate.totalGrossPaid;
+                contractToUpdate.ownerNet = contractToUpdate.totalNetPaid;
+                wixData.update('Payments', contractToUpdate, options)
+                .then ( () => { console.log('updated contract ref ' + contractToUpdate.title)})
+                .catch( (err) => {
+                    let errorMsg = err;
+                } );
+            })
+        })
+    })
+}
+
+export async function countContract () {
+    wixData.query('Contracts')
+    .limit(999)
+    .find(options)
+    .then( async (results) => {
+        let allContract = await results.items.map( (contract) => {
+            return {
+                _id: contract._id,
+                ref: contract.title,
+                owner: contract.owner,
+            }
+        })
+        console.log(allContract);
+        let allPayments = await getPayments();
+        let paymentsArray = allPayments.items;
+        console.log(allPayments);
+        paymentsArray.forEach( pay => {
+            let index = allContract.findIndex(x => x.ref === pay.title);
+            if (index !== -1) {
+                //console.log('index, pay._id, allContract[index]._id, allContract[index].owner', index, pay._id, allContract[index]._id, allContract[index].owner);
+                wixData.get('Payments', pay._id, options)
+                .then((ToUpdate) => {
+                ToUpdate.booking = allContract[index]._id;
+                ToUpdate.owner = allContract[index].owner;
+                ToUpdate.paymentMethodId = 'previuos website';
+                ToUpdate.agent = 'de8ab612-3f47-4ef5-b739-eb4dd9d8a937';
+                wixData.update('Payments', ToUpdate, options)
+                .then ( () => { console.log('updated contract ref ' + ToUpdate.title)})
+                .catch( (err) => {
+                    console.log('err', err)
+                } );
+            })
+            } else {
+                console.log(index, 'index to check with booking ', pay.title)
+            }
+        })  
+    })
+}
+
+function getPayments () {
+    return wixData.query('Payments')
+    .limit(999)
+    .find(options)
+}
+*/
+// TO UPDATE THE DATES IN ALL THE CONTRACT OFD THE BOOKING IN OUR DATABASE
+//import { updateCal } from 'backend/ical';
+
+/*
+FRONT END OF THE datesContract UPDATE IS
+$w.onReady(async function () {
+let counter = 0;
+var myVar = setInterval( () => {
+        datesContract(counter);
+        counter++;
+        if (counter === 1) { // set the number of contract to update; you can take the total count from query
+        clearInterval(myVar);
+        }
+    }, 5000);   
+});
+
+import {fetch} from 'wix-fetch';
+
+export async function fetchRate () {
+  let httpResponse = await fetch("https://sakamoto.wixsite.com/sakamoto/_functions/fetchRate", {"method": "get"})
+    if (httpResponse.ok) {
+      //let json = JSON.parse(httpResponse);
+      console.log(httpResponse);
+    } else {
+      return Promise.reject("Fetch did not succeed");
+    }
+}
+
+
+export async function get_fetchRate2() {
+fetch("https://sakamoto.wixsite.com/sakamoto/_functions/fetchRate", {"method": "get"})
+//fetch("https://sakamoto.wixsite.com/sakamoto/_functions/fetchRate", {"method": "get"})
+  .then( (httpResponse) => {
+    if (httpResponse.ok) {
+      return httpResponse.json();
+    } else {
+      return Promise.reject("Fetch miserabily failed");
+    }
+  } )
+  .then(json => console.log(json))
+  .catch(err => console.log(err));
+}
+
+export async function amendPay () {
+    let contractsArray= await wixData.query('Contracts')
+    //.include('owner')
+    .limit(999)
+    .find(options)
+
+    wixData.query('Payments')
+    .limit(999)
+    .include('booking')
+    .find(options)
+    .then( (results) => {
+        results.items.forEach( (pay) => {
+            let index = contractsArray.items.findIndex(x => x.owner === pay.booking.owner);
+            if (index <0) {
+                console.log(pay, 'This pay is not good');
+            } else { console.log('OOOKKKK found')}
+
+            /// mixed function of different kind. finish above 
+            wixData.get('Payments', contract._id, options)
+            .then((contractToUpdate) => {
+                console.log(contractToUpdate)
+                if (contractToUpdate.channel) {
+                    contractToUpdate.payPlatform = contractToUpdate.channel;
+                }
+                //contractToUpdate.payer = null;
+                //contractToUpdate.ownerNet = contractToUpdate.totalNetPaid;
+                wixData.update('Payments', contractToUpdate, options)
+                .then ( () => { console.log('updated contract ref ' + contractToUpdate.title)})
+                .catch( (err) => {
+                    let errorMsg = err;
+                } );
+            })
+            
+        })
+    })
+}
+*/
+
+// export async function amendPayDetails () {
+//     wixData.query('Payments')
+//     .include('booking')
+//     .eq('payWhat', 'booking')
+//     .limit(400)
+//     .find(options)
+//     .then( (results) => {
+//         results.items.forEach( (payment) => {
+//             console.log('This pay is for booking');
+//             payment.title = payment.booking.title;
+//             wixData.update('Payments', payment, options)
+//             .then ( () => { console.log('updated payment ' + payment.title)})
+//             .catch( (err) => {
+//                 let errorMsg = err;
+//                 console.log(err, 'error');
+//             } );
+//         })
+//     })
+// }
+
+/*
+export async function amendPayDetails () {
+    wixData.query('Payments')
+    .eq('owner', '4d9da1d6-b324-4e70-bac2-b1bc6a2ea26b')
+    .limit(999)
+    .find(options)
+    .then( results => {
+        results.items.forEach( (pay) => {
+            let {totalNetPaid} = pay;
+            pay.ownerGross = 0;
+            pay.ownerNet = 0;
+            pay.paymentFee = totalNetPaid;
+            wixData.update('Payments', pay, options)
+            .then ( () => { console.log('updated payment ' + pay.title)})
+            .catch( (err) => {
+                let errorMsg = err;
+                console.log(err, 'error');
+            } );
+        })
+    })
+}
+
+totalPriceIclprocesssing = priceNoExtraBeds + extraBedEur + processingFee
+
+priceNoExtraBeds = totalPriceIclprocesssing - extraBedEur - processingFee
+
+price = totalPriceIclprocesssing  - processingFee
+*/
+
+// export function amendContract () {
+//     wixData.query('Payments')
+//     //.include('owner')
+//     .limit(999)
+//     .find(options)
+//     .then( (results) => {
+//         console.log(results.totalCount, 'contracts num');
+//         results.items.forEach( (contract) => {
+//            // console.log(contract.title, contract.member, 'each contract')
+//             if (contract.owner === '95735488-ca5c-410f-ae6c-a376c41129fd') {
+//                 console.log('this copntract', contract.title)
+//                 contract.villa === 'fb1edbd8-3a22-4fb8-886b-94f8cc9cca66';
+//             }
+//             wixData.update('Contracts', contract, options)
+//                 .then ( () => { console.log('updated contract ref ' + contract.title)})
+               
+
+//             /*
+//             let {price, priceNoExtraBeds, extraBedEur=0, extraCheckinEur, processingFee=0, totalPriceIclProcesssing} = contract;
+//             if (processingFee > 0) {
+//                 //console.log('contract', contract);
+//                 //console.log( totalPriceIclProcesssing, price, priceNoExtraBeds, extraBedEur, processingFee, 'totalPriceIclprocesssing, price, priceNoExtraBeds, - extraBedEur - processingFee');
+//                 let pNoExtraBeds = totalPriceIclProcesssing - extraBedEur - processingFee; 
+//                 let p = totalPriceIclProcesssing - processingFee;
+//                 contract.price = p;
+//                 contract.priceNoExtraBeds = pNoExtraBeds;
+//                 //console.log(totalPriceIclProcesssing, p, pNoExtraBeds, processingFee, totalPriceIclProcesssing = p + extraBedEur + processingFee, pNoExtraBeds = p - extraBedEur, p = totalPriceIclProcesssing - extraBedEur - processingFee)
+//                 console.log( totalPriceIclProcesssing === pNoExtraBeds + extraBedEur + processingFee, pNoExtraBeds === p - extraBedEur, pNoExtraBeds === totalPriceIclProcesssing - extraBedEur - processingFee, p === totalPriceIclProcesssing - processingFee, contract.title)
+    
+//                 wixData.update('Contracts', contract, options)
+//                 .then ( () => { console.log('updated contract ref ' + contract.title)})
+//                 .catch( (err) => {
+//                      console.log(err, 'error')
+//                 } );
+//             } 
+//             */
+//         })
+//     })
+//     .catch( (err) => {
+//         console.log(err, 'error')
+//     } );
+// }
+
+/*
+// VERY IMPORTANT TO CHECK THE CONTRACT IF SQUARED IN ALL NUMBERS
+export function checkContractIfNumberAreRight () {
+    wixData.query('Contracts')
+    //.include('owner')
+    .limit(999)
+    .find(options)
+    .then( (results) => {
+        results.items.forEach( (contract) => {
+            let {price, priceNoExtraBeds, extraBedEur=0, extraCheckinEur, processingFee=0, totalPriceIclProcesssing} = contract;
+        //console.log(totalPriceIclProcesssing, p, pNoExtraBeds, processingFee, totalPriceIclProcesssing = p + extraBedEur + processingFee, pNoExtraBeds = p - extraBedEur, p = totalPriceIclProcesssing - extraBedEur - processingFee)
+        console.log( totalPriceIclProcesssing === priceNoExtraBeds + extraBedEur + processingFee, priceNoExtraBeds === price - extraBedEur, priceNoExtraBeds === totalPriceIclProcesssing - extraBedEur - processingFee, price === totalPriceIclProcesssing - processingFee, contract.title)
+        })
+    })
+    .catch( (err) => {
+        console.log(err, 'error')
+    } );
+}
+
+
+import {dynamicEmail} from 'backend/sendGrid.jsw';
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+export async function sendOldBookingsEmail () {
+    let contractAll = await contracts();
+    let counter = 0;
+    let length = contractAll.length;
+    console.log(contractAll, length, 'contractAll, length')
+    var myVar = setInterval( () => {
+        //console.log(contractAll[counter], 'going for this in interval')
+        sendEmail(contractAll[counter]);
+        counter++;
+        //console.log(counter, 'counter')
+        if (counter === length) {
+            console.log(counter === length, counter, length)
+        clearInterval(myVar);
+        }
+    }, 100);    
+}
+
+function sendEmail (contract) {
+    console.log('triggered for contract', contract.title )
+    let {balanceDate, checkIn, name, title, email=null, nightsNumber, villa, member} = contract;
+    //console.log(email, member, 'email and member')
+    if (email && !member) {
+        //let villaName = await getVillaName (villa);
+        let dynamicJSON = {
+        name: name,
+        reference: title,
+        //villa: villaName,
+        checkin: checkIn.toLocaleDateString(undefined, optionsDate),
+        nightsNumber: nightsNumber,
+        balanceDate: balanceDate.toLocaleDateString(undefined, optionsDate),
+        }
+        console.log('this would send to ', dynamicJSON, email)
+        dynamicEmail('info@sakamoto.com', email, 'Welcome to the brand new Hedo villas website', 'email to olde bookings', false, 'oldBookings', dynamicJSON);
+    }
+}
+
+    
+
+
+function contracts () {
+    return wixData.query('Contracts')
+    .limit(90)
+    .find(options)
+    .then( (results) => {
+        return results.items;
+         })
+    .catch( (err) => {
+        console.log(err, 'err')
+    } );
+}
+
+
+export function getVillaName (villaId) {
+     return wixData.get('Villas', villaId, options).then( villa => {
+         console.log(villa, villa.title, 'villa data')
+         return villa.title;
+         })
+         .catch( (err) => {
+        console.log(err, 'err')
+    } );
+ }
+
+//change the date to string in nested array
+export async function changeRateDates () {
+    wixData.query('algoRate')
+    .limit(999)
+    .find(options)
+    .then( async (results) => {
+        let allVillas = await results.items;
+        //console.log(allVillas);
+        allVillas.forEach(  villa => {
+            let rates = villa.ratesArrayAlgo;
+            //console.log('now we go with villa ', villa.title, rates);
+            let p1 = new Promise( (resolve, reject) => {
+                resolve(callBack(rates, villa._id));
+             }) 
+            p1.then( (finalUpdate) => {
+                console.log(finalUpdate, 'should be done');
+            });
+        })     
+    });
+}
+
+function callBack (rates, villaId) {
+    //console.log('start calback with', rates, villaId,)
+    let p1 = new Promise( (resolve, reject) => {
+        let counter =0;
+        let length = rates.length;
+        //console.log('starting with length', length);
+        rates.forEach(async (rate) => {     
+            if (typeof rate.start === 'string') {
+                //console.log(('we got a string '));
+                let startDate = new Date(Date.parse(rate.start));
+                //console.log(startDate, 'after parse')
+                rate.start = startDate;
+            }   
+            if (typeof rate.end === 'string') {
+                let endDate = new Date(Date.parse(rate.end));
+                rate.end = endDate;
+            }
+            counter++;
+            //console.log(counter, length, 'here in loop')
+        if (counter === length) {
+            console.log('one promise resolved')
+            resolve(rates);
+        }
+        })
+    });
+    p1.then( (ratesToUpdate) => {
+        //console.log(ratesToUpdate, 'ratesToUpdate')
+            wixData.get('algoRate', villaId, options)
+        .then((villaToUpdate) => {
+            villaToUpdate.ratesArrayAlgo = ratesToUpdate
+            wixData.update('algoRate', villaToUpdate, options)
+            .then ( () => { console.log('updated contract'); return 'updated'})
+            .catch( (err) => {
+                console.log('err', err)
+            } );
+        })
+    })
+}
+*/
+
+/*
+    export function deleteEmptyTitle () {
+        wixData.query('Countries')
+        .limit(1000)
+        .isEmpty('title')
+        .find(options)
+        .then( (results) => {
+            let counter = 0;
+            results.items.forEach( item => {
+                let id = item._id;
+                wixData.remove("Countries", id)
+                .then( (removed) => {
+                    counter++;
+                    console.log(counter);
+                } )
+                .catch( (err) => {
+                    let errorMsg = err;
+                } );
+            })
+        })
+    }
+
+    */
+
+    // var optionsHooks = {
+    //     "suppressAuth": true,
+    //     "suppressHooks": true,
+    // };
+    // export function changeKeyObjContract () {
+    //     wixData.query('Contracts')
+    //     .isNotEmpty('data179Obj')
+    //     .limit(999)
+    //     .find(options)
+    //     .then( (results) => {
+    //         // console.log(results.items)
+    //         results.items.forEach( (contract) => {
+    //             const { contractId: _id, ...rest } = contract;
+    //             const newContract = { _id, ...rest }
+    //             console.log(contract, 'contract')
+    //             delete Object.assign(contract.data179Obj, {['_id']: contract.data179Obj['contractId'] })['contractId'];
+    //             wixData.update('Contracts', contract, optionsHooks).then ( () => { console.log('updated contract ref ' + contract.title)})
+    //         })
+    //     })
+    //     .catch( (err) => {
+    //         console.log(err, 'error')
+    //     } );
+    // }

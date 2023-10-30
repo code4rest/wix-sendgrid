@@ -1,0 +1,275 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+import wixUsersBackend from 'wix-users-backend';
+import {getAgentFronEnd} from 'backend/agents';
+
+import { authentication } from 'wix-members-backend';
+import { authorization } from 'wix-members-backend';
+import { currentMember } from 'wix-members-backend';
+import { members } from 'wix-members-backend';
+
+
+var options = {
+"suppressAuth": true,
+};
+
+
+function addOwner (toInsert, agentId, villaId, newMemberId) {
+  const {lastName, title, firstName} = toInsert;
+  const newOwner = {
+    title: firstName + '' + lastName,
+    surname: lastName,
+    name: firstName,
+    member: newMemberId,
+    wixUserEmail: title,
+    agent: agentId
+  }
+  wixData.get('Villas', villaId, options).then(villa => {
+    if(villa.agent===agentId && !villa.owner && villa.approvedByAdmin !== true) {
+      wixData.query('Owners').eq('member', newMemberId).find(options).then( results => {
+        if(results.totalCount < 1) { // if this owner was not already in the database
+          wixData.insert('Owners', newOwner, options)
+          .then( newOwnerObj => {
+            villa.owner = newOwnerObj._Id;
+            assignOwnerRole(); // give this owner also the owner role
+            wixData.update('Villas', villa, options).then( updated => {
+              // send email to owner admin and agent about the new owner
+              getAgentFronEnd (agentId).then( agent => {
+                let dynamicJSON = {name: toInsert.firstName + toInsert.lastName, villaName: villa.title, agentName: agent.fullName}
+                dynamicEmail('info@sakamoto.com', toInsert.title, "Welcome to the Hedo villas owners community", 'newMember', true, 'newOwner', dynamicJSON);
+                dynamicEmail('info@sakamoto.com', agent.email, "Welcome to the Hedo villas owners community", 'newMember', false, 'newOwner', dynamicJSON);
+              });
+            });
+          });
+        }
+      });
+    }
+  })
+  .catch( (err) => {
+    console.log(err);
+    //return err;
+  } );
+}
+
+function getMemberNewApi () { //https://www.wix.com/velo/reference/wix-members-backend/currentmember/getmember
+  return currentMember.getMember() //options
+    .then((member) => {
+      // const fullName = `${member.contactDetails.firstName} ${member.contactDetails.lastName}`;
+      // const memberProfilePage = `https://yoursite.com/profile/${member.profile.slug}/profile`;
+      return member._id;
+    })
+    .catch((error) => {
+      console.log(error);
+      return 'error';
+    })
+}
+
+async function assignOwnerRole () {
+  const roleId = "b010a799-a508-4a2e-98bf-84d8961fbabd"; //owner role
+  const memberId = await getMemberNewApi ();
+  const options = {
+    suppressAuth: true
+  };
+  return authorization.assignRole(roleId, memberId, options)
+    .then(() => {
+      console.log("Role assigned to member");
+      return 'roleAssigned';
+    })
+    .catch((error) => {
+      console.log(error);
+    });
+    
+}
+
+function myDeleteMemberFunction(memberId) {
+  console.log(memberId);
+  return members.deleteMember(memberId)
+    .then(() => {
+      return 'Member deleted';
+    })
+    .catch((error) => {
+      console.log(error, 'err in remove')
+      return 'error'
+    });
+}
+// "firstName": $w('#firstName').value,
+//     "lastName": $w('#lastName').value,
+//     "title": emailLowerCase,
+//     "password": $w("#password").value,
+//     "name": ($w('#firstName').value + ' ' + $w('#lastName').value),
+//     "mainPhone": $w('#phone').value,
+//     "agent": agentId,
+//     "nationality": nationality
+export function newMember(toInsert, agentId, villaId) {
+  return pushMyMember(toInsert).then( newMemberId => {
+    if(newMemberId !== 'failed') {
+      if(villaId) {
+        addOwner(toInsert, agentId, villaId, newMemberId);
+      }
+      return 'completed';
+    }
+    else {return 'failed';}
+  })
+  .catch( (err) => {
+    console.log(err);
+    return 'failed';
+  } );
+}
+
+
+// insert MyMember
+function pushMyMember (toInsert) {
+  const wixMemberResponse = new Promise( (resolve, reject) => {resolve(insertInWixMembership(toInsert));});
+  const myMember =  new Promise( (resolve, reject) => {resolve(memberPush(toInsert));}); 
+  return Promise.all([wixMemberResponse, myMember]).then( values => {
+    const [wixMember, myMember] = values;
+    if(wixMember.execution === 'completed' && myMember.execution === 'inserted') {return 'completed';} // both good
+    else if(wixMember.execution !== 'completed' && myMember.execution !== 'inserted') {return 'failed';} // both failed
+    else if(wixMember.execution !== 'completed') {
+      return insertInWixMembership(toInsert).then( wixMemberResponse => { 
+        // if (wixMemberResponse.execution === 'completed') {return 'completed';} 
+        // wixData.remove('MyMembers', myMember.myMemberId, options);
+        // return 'failed';
+        return 'completed';
+      });
+    }
+    else if(myMember.execution !== 'inserted') {
+      return memberPush(toInsert).then( responseMy => { // retry my
+          if(responseMy.execution === 'inserted') {return 'completed';}
+          myDeleteMemberFunction(wixMember.memberId);
+          return 'failed';
+      });
+    }
+    return 'failed'; // something still worng failed
+  });
+}
+
+
+// new API
+export function myGetMemberFunction(id) {
+  const optionsSearchMember ={
+    fieldsets: [ "PUBLIC" ]
+  }
+  return members.getMember(id, optionsSearchMember)
+    .then((member) => {
+      console.log('member we found', member);
+      return member;
+    })
+    .catch((error) => {
+      console.log(error);
+      return 'error';
+    });
+}
+
+
+function memberPush (dataObj) {
+  //const {email, firstName} = dataObj;
+  return wixData.insert('MyMembers', dataObj, options)
+  .then( (inserted) => {
+    console.log('inserted', inserted);
+    sendEmail(dataObj.title, dataObj.name); // sending already in insertWix function below
+    return {execution: 'inserted', myMemberId: inserted._id};
+  })
+  .catch( (err) => {
+    console.log('err in my member push', err)
+    return {execution: 'failed', myMemberId: null};
+  } );
+}
+
+
+//IMPORTANT
+//new wix api 
+export function insertInWixMembership(toInsert) {
+  const {lastName, title, password, firstName} = toInsert; 
+  const options = {
+    contactInfo: {
+      firstName: firstName,
+      lastName: lastName
+    },
+    privacyStatus: "PRIVATE"
+  }
+  return authentication.register(title, password, options) 
+    .then((registrationResult) => {
+      return {execution: 'completed', memberId: registrationResult.member._id};
+    })
+    .catch((error) => {
+      console.log(error);
+      return {execution: 'failed', memberId: null};
+    });
+}
+
+
+async function sendEmail (email, firstName) { // sendGrid
+  let dynamicJson = {
+            "name":firstName 
+            }
+  dynamicEmail('info@sakamoto.com', email, "welcome to Hedo villas!", "Subscription", false, 'subscribe', dynamicJson); // this send the email from sendGrid
+//        fromEmail,    toEmail,  subjectString,              sendingFunction,  booleanIfToAdmin,     templateId,       
+}
+
+
+// insertWix OLD DEPRECATED but stable
+// export function insertWix(toInsert) {
+//   const {lastName, title, password, firstName} = toInsert; 
+//   const contactInfo = {
+//     contactInfo: {
+//       firstName: firstName,
+//       lastName: lastName
+//     },
+//     privacyStatus: "PRIVATE"
+//   }
+//   return wixUsersBackend.register(title, password, contactInfo)
+//     .then((response) => {
+//       return {execution: 'completed', memberId: response.user.id};
+//     })
+//     .catch((error) => {
+//       console.log(error);
+//       return {execution: 'failed', memberId: null};
+//     })
+// }
+
+// function pushMyMember (toInsert) {
+//   const wixMemberResponse = new Promise( (resolve, reject) => {resolve(insertInWixMembership(toInsert));});
+//   const myMember =  new Promise( (resolve, reject) => {resolve(memberPush(toInsert));}); 
+//   return Promise.all([wixMemberResponse, myMember]).then( values => {
+//     const [wix, my] = values;
+//     if(wix.execution === 'completed' && my === 'inserted') {return 'completed';} // both good
+//     else if(wix.execution !== 'completed' && my !== 'inserted') {return 'failed';} // both failed
+//     else if(wix.execution !== 'completed') {
+//       return insertInWixMembership(toInsert).then( wixMemberResponse => { //retry wix
+//         if (wixMemberResponse.execution === 'completed') {return 'completed';} 
+//       });
+//     }
+//     else if(my !== 'inserted') {
+//       return memberPush(toInsert).then( responseMy => { // retry my
+//           if(responseMy === 'inserted') {return 'completed';}
+//        });
+//     }
+//     return 'failed'; // something still worng failed
+//   });
+// }
+
+
+// async function pushMyMember (toInsert) {
+//   const wixMemberResponse = await insertInWixMembership(toInsert);
+//     console.log('wixMemberResponse', wixMemberResponse)
+//     if (wixMemberResponse.execution === 'completed') {
+//       return memberPush(toInsert).then( (insertedId) => {
+//         console.log(insertedId, 'myMemeber response');
+//           if(insertedId !== 'inserted') {
+//             return memberPush(toInsert).then( (insertedId) => {
+//               console.log(insertedId, 'myMemeber response');
+//               if(insertedId !== 'inserted') {
+//                 myDeleteMemberFunction(wixMemberResponse).then( deleteResp => {
+//                   if(deleteResp === 'Member deleted') {return 'failed';}
+//                   else{
+//                     myDeleteMemberFunction(wixMemberResponse);
+//                     return 'failed';
+//                   }
+//                 });
+//             } else {return 'completed';}
+//             });
+//           } else {return 'completed';}
+//       })
+//     } else {return 'failed'}
+// }

@@ -1,0 +1,335 @@
+import wixData from 'wix-data';
+// import {slotCalculator, rateAlgo} from 'backend/offers.jsw'; 
+import {searchAgent, mapLead} from'backend/agents';
+import {queryAvailable} from 'backend/queryBooked';
+import {deleteOffers} from'backend/offers.jsw';
+
+var options = {
+  "suppressAuth": true,
+};
+
+
+export async function allVillasInquiry (guests, bedrooms) { 
+  //console.log('searching villas for range calc for guests, bedrooms, luxy', guests, bedrooms, luxy);
+  //console.log(typeof luxyNumber, luxyNumber, 'typeof luxy  and then. luxy value');
+  let villas = await wixData.query("Villas") 
+      .eq('pubblished', true)
+      .ne('isHidden', true)
+      .ne('delisted', true)
+      .ge('totGuests', guests)
+      .ge('bedrooms', bedrooms)
+      .find();
+      return villas.items.map( (item) => {
+      //console.log(villas, item.score, 'villasArray and each luxy in the loop');
+      return {
+        "_id": item._id,
+      };
+    } );  
+}
+
+export function deleteInquiry (inquiryId) {
+  console.log(inquiryId, 'inquiry id backend to remove');
+  return wixData.remove("Inquiries", inquiryId, options)
+    .then( (results) => {
+      console.log('Inquiry removed');
+      deleteOffers(inquiryId);
+      return 'removed';
+    } )
+    .catch( (err) => {
+      console.log(err, 'error removing offer');
+      return 'error';
+    } );
+}
+
+
+import {dynamicEmail} from 'backend/sendGrid';
+import {getMyFullMember} from 'backend/leaders';
+
+export async function sendEmail (dynamicJson) {
+  console.log(dynamicJson, 'got the JSON, start sending email');
+  let user = await getMyFullMember();
+  let {email, name} = user;
+  console.log(email, name, dynamicJson, 'email, name  dynamicJson');
+  dynamicEmail('info@sakamoto.com', email, "welcome to Hedo Villas Marbella!", "form submission", false, 'submitForm', dynamicJson); // this send the email from sendGrid 
+        //        fromEmail,        toEmail,                subjectString,    sendingFunction, booleanIfToAdmin,  templateId,       
+}
+
+import {calcNights} from 'backend/search.jsw';
+
+export async function amendInquiry (inquiryId, property, value) { 
+  const agent = await searchAgent();
+  const agentId = agent[0];
+  return wixData.get('Inquiries', inquiryId, options).then( async inquiry => {
+    if (inquiry.agent === agentId) {
+      // if property is checkIn or checkOut then change the nights num
+      if (property === 'fromDate' && inquiry.isFixed === true) {
+        let nights = await  calcNights (value, inquiry.to);
+        inquiry.nightsNumber = nights;
+      }
+      else if (property === 'to' && inquiry.isFixed === true) {
+        let nights = await calcNights (inquiry.fromDate, value);
+        inquiry.nightsNumber = nights;
+      }
+      inquiry[property] = value; 
+      console.log(inquiry[property], inquiry.nightsNumber, 'inquiry[property], inquiry.nightsNumber');
+      return wixData.update('Inquiries', inquiry, options).then( updated => {
+        return {
+          execution: 'updated',
+          inquiryId: updated._id,
+        }
+      })
+    } else {
+      return 'not allowed';
+    }
+  })
+  .catch( (err) => {
+    console.log(err, 'error')
+    return 'error';
+  } );
+}
+
+export async function submitInquiry (inquiryObj) {
+    const fullMember = await getMyFullMember(); 
+    const res = await submitInquiryInsert (inquiryObj, fullMember);
+    return res;
+  
+}
+
+export async function submitInquiryAgent (inquiryObj, memberId) {
+  try {
+    let p1 = new Promise( (resolve, reject) => {
+      resolve(getThisFullMember(memberId));
+    });
+    let p2 = new Promise( (resolve, reject) => {
+      resolve(searchAgent());
+    });
+    return Promise.all([p1,p2]).then( resArray => {
+      const agentId = resArray[1][0];
+      const fullMember = resArray[0];
+      if(fullMember.agent === agentId) return submitInquiryInsert(inquiryObj, fullMember);
+      return 'not allowed';
+    });
+  } catch (error) {
+    return { error: error, stack: error.stack}
+  } 
+}
+
+function getThisFullMember (memberId) {
+  return wixData.query("MyMembers")
+    .eq("_id", memberId)
+    .find(options)
+    .then((results) => {
+      console.log(results, "results from leaderEmail search in backend");
+      if (results.length === 1) {
+        let {squad=[], _id, agent, firstName, lastName, title, secondaryEmail, pic, mainPhone, squadName=null} = results.items[0];
+        const fullMember = {
+          memberId: _id,  //that is exactly the previuos order when it was an array so memberId was [0] and so on so forth
+          agent: agent, 
+          name: firstName, 
+          surname: lastName, 
+          email: title, 
+          secondaryEmail: secondaryEmail, 
+          pic: pic, 
+          phone: mainPhone, 
+          squad: squad, 
+          squadName: squadName,
+        }
+        //console.log(fullMember, 'fullMember')
+        return fullMember;
+      }
+    })
+    .catch( err => err);
+}
+
+export async function submitInquiryInsert (inquiryObj, fullMember) { 
+  const {yearIn, monthIn, dayIn, hourIn} = inquiryObj.fromDate;
+  const {yearOut, monthOut, dayOut, hourOut} = inquiryObj.to;
+  const dateIn = new Date(yearIn, monthIn, dayIn, 16);
+  const dateOut = new Date(yearOut, monthOut, dayOut, 12);
+  var responseIfDouble = await checkIfInquiryDouble(dateIn, dateOut, fullMember.memberId);
+  // console.log(responseIfDouble, 'responseIfDouble')
+    if (responseIfDouble === false) { // submit the inquiry
+      let finalObj = await setup(fullMember, inquiryObj);
+      finalObj.fromDate = dateIn;
+      finalObj.to = dateOut;
+      console.log(finalObj, 'this shit if what we insert in inquiry');
+      return wixData.insert('Inquiries', finalObj, options).then( saved => {
+      setupSendEmail(saved, fullMember.name);
+      return 'submitted';
+    })
+    .catch( (err) => {
+      console.log(err, 'error')
+      return 'error';
+    } );
+  }
+  else { // we have this already
+    //ask if to replace to front end
+    return 'isDouble'; 
+  }
+}
+
+async function setup (fullMember, inquiryObj) {
+  let {agent= "de8ab612-3f47-4ef5-b739-eb4dd9d8a937"} = fullMember; //email, name, 
+  let inquiryRef = Math.random().toString(36).substring(2, 15);
+  // let {nightsNumber} = inquiryObj;
+  inquiryObj.myMember = fullMember.memberId;
+  inquiryObj.title= "INQUIRY_" + inquiryRef;
+  inquiryObj.agent = agent;
+  inquiryObj.city= 'ae69dc7b-d59e-4968-9469-5ae2b3ef2916';
+  inquiryObj.name= fullMember.name; 
+  inquiryObj.lastName= fullMember.surname;
+  return inquiryObj;            
+}
+
+function setupSendEmail (saved, name) {
+    // console.log(saved, 'item saved')
+    const optionsDate = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    let {fromDate, to, policy, nightsNumber, budget, guests, isFlexible=false, isFixed=false, currency='€'} = saved;
+    let inDate = fromDate.toLocaleDateString('en-GB', optionsDate);
+    let outDate = to.toLocaleDateString('en-GB', optionsDate);
+    if (isFixed === true) {
+      var flexibility = 'Dates are fixed';
+    } else if (isFlexible===true) {
+      flexibility = nightsNumber + ' nights in between the selected dates';
+    }
+    let dynamicJson = {
+      "name":name,
+      "checkin": inDate,
+      "checkout": outDate,
+      "flexiFixed": flexibility,
+      "budget": budget,
+      "nights": nightsNumber,
+      "guests": guests,
+      "policy": policy,
+      'currency': currency
+      //"bedrooms": bedrooms
+    }
+    console.log(dynamicJson, 'JSON for email');
+    sendEmail(dynamicJson); //bedrooms deleted for now  
+    scanAgentsforEmailInquiry(dynamicJson, fromDate, to);
+}
+
+function scanAgentsforEmailInquiry (dynamicJson, start, end) {
+  let agentSent = [];
+  wixData.query('Villas').limit(999).eq('approvedByAdmin', true).eq('pubblished', true).include('agent').find(options)
+  .then( results => {
+      results.items.forEach( villa => {
+        queryAvailable (start, end, villa._id).then( responseNum => {// return a number if 0 no booking crossing the dates
+            let checkIfSent = agentSent.findIndex(x => x === villa.agent._id); // -1 not sent yet
+            if (responseNum === 0 && checkIfSent === -1) {
+              sendEmailAgents(dynamicJson, villa.agent.email);
+              agentSent.push(villa.agent._id); //avoid sending more than 1
+            }
+        })
+      })
+  })
+}
+
+export async function sendEmailAgents (dynamicJson, agentEmail) {
+  dynamicEmail('info@sakamoto.com', agentEmail, "You have a lead to manage!", "Inquiry to agent", false, 'leadAgent', dynamicJson); // this send the email from sendGrid 
+        //        fromEmail,        toEmail,                  subjectString,     sendingFuncti booleanIfToAdmin,  templateId,       
+}
+
+
+export function checkIfInquiryDouble (fromDate, toDate, memberId) {
+  const fromDatePrev = new Date(fromDate.setHours(1));
+  const toDatePost = new Date(toDate.setHours(23));
+  toDate.setHours(1);
+  fromDate.setHours(23);
+  return wixData.query('Inquiries')
+  .eq('myMember', memberId)
+  .between('fromDate', fromDatePrev, fromDate)
+  .between('to', toDate, toDatePost)
+  .find(options)
+  .then( (results) => {
+    console.log(results, 'results if double')
+    if (results.totalCount > 0) {
+      return true;
+    }
+    else { return false}
+  })
+}
+
+export function populateParties(collectionName) {
+  let all = [];
+  return wixData.query(collectionName)
+  .ascending('title')
+  .find()
+  .then((results) => {
+    //console.log(results, 'parties');
+    if (results.totalCount > 0) {
+      let items = results.items;
+      items.forEach((item) => {
+        let oneItem = {
+          label: item.title,
+          value: item._id
+        }
+        all.push(oneItem);
+      })
+      return all;
+    } 
+    return null;
+    
+  })
+}
+
+export function moveOldInquiries () {
+  fetchOldInquiries();
+}
+
+function fetchOldInquiries () {
+  let todayMs = new Date().getTime();
+  let  sixWeekAgoMs = todayMs - 3628800000 //6 weeks ms
+  let sixWeeksDate = new Date(sixWeekAgoMs);
+  wixData.query('Inquiries')
+  .le('_createdDate', sixWeeksDate)
+  .find(options)
+  .then( (results) => {
+    if (results.totalCount > 0) {
+      results.items.forEach( inquiry => {
+        removeAndInsert(inquiry._id);
+      })
+    }
+  })
+}
+
+function removeAndInsert (inquiryId) {
+    wixData.get('Inquiries', inquiryId, options).then( inquiry => {
+      wixData.insert('archivedInquiries', inquiry, options).then( inserted => {
+        wixData.remove('Inquiries', inquiryId, options);
+      })
+    })
+}
+
+export async function searchInquiry (searchValue) {
+  const agent = await searchAgent();
+  const agentWhosViewing = agent[0];
+  let inquiries = await searchLeadWithValue(searchValue);
+  console.log(inquiries, 'inquiries');
+  if (inquiries.length > 0) {
+    let mapped = await mapLead(inquiries.items, agentWhosViewing);
+    console.log(mapped, 'mapped');
+    return mapped;
+  }
+  else { return [];}
+}
+
+function searchLeadWithValue (searchValue) {
+  return wixData.query("Inquiries")
+    .contains("name", searchValue)
+    //.ne("deleted", true)
+    .or(wixData.query("Inquiries")
+      .contains("lastname", searchValue))
+    .or(wixData.query("Inquiries")
+      .eq("myMember", searchValue))
+    .or(wixData.query("Inquiries")
+      .contains("_id", searchValue))
+    .include('agent')
+    .include("kindOfParty")
+    .include("city")
+    .include('myMember')
+    .descending('_createdDate')
+    .find(options)
+    .then( (results) => { return results});
+  }
+

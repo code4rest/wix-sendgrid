@@ -1,0 +1,397 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import {Stripe} from 'stripe';
+import {getFullYearCal} from 'backend/createCalendar.js';
+import {getStripeKey} from 'backend/secrets.js';
+// import {dynamicEmail} from 'backend/sendGrid';
+//const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'; // my own test key
+ //const key = 'sk_test_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' // generic test key 
+//const key = await getStripeKey(); // LIVE
+
+const optionsDate = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+
+ var options = {
+"suppressAuth": true,
+};
+
+//ALERT IF SEARCHING FOR ADDING ALL BOOKING TO CALENDAR
+// addBookingAllVillas ical.jsw
+
+export function makeBookingCalendar () {
+  wixData.query('Villas').eq('approvedByAdmin', true).find(options).then( villas => {
+    console.log(villas, 'villas')
+    villas.items.forEach( villa => {
+       let yearArray = [];
+      for (let i = 0; i <= 11; i++) { 
+        console.log(i, 'i in the loop');
+        yearArray.push([]);
+      }
+      let item = {
+        villa: villa._id,
+        '2021': yearArray,
+        '2022': yearArray,
+        '2023': yearArray,
+        '2024': yearArray,
+        '2025': yearArray,
+      };
+      console.log(item, 'item to insert');
+      wixData.insert('Bookings', item, options).then( inserted => {console.log(villa.title);})
+      .catch( (err) => {
+        console.log(err, 'error');
+      } );
+    })
+  });
+}
+
+export function bookingArrayCalendar (villaId, year) {
+  // console.log(villaId, 'villaId')
+  return wixData.query('Bookings')
+    .eq('villa', villaId)
+    .find(options).then( results => {
+    // console.log(results.items[0][year.toString()], 'booking for this villa');
+    return results.items[0][year.toString()];
+  });
+}
+
+export async function bookingData (offerId) {
+  //console.log('how many times it is triggered');
+  // var memberData = await member();
+  // var memberId = memberData._id;
+  // console.log(memberData, memberId, 'memberData then memberId');
+  return wixData.query("Offers") 
+    .include('villa')
+    .include('member')
+    //.ne("rejected", true) //do not show the offers already rejected
+    //.eq('member', memberId)
+    .eq("_id", offerId) //ALERT here the filed name is JUST member and NOT myMember
+    .find(options)  
+    .then( async (results) => {
+      // console.log(results, 'offer for bookingData obj');
+    if(results.items.length > 0) {
+      const items = results.items;
+      const mapped = await mapOffer(items[0], items[0].member);
+      return mapped;
+    } else {
+        return {
+          'error': 'notFound',
+          checkIn: null, 
+          checkOut: null, 
+          villaId: null
+        }
+      } 
+  })
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+    return {
+          'error': errorMsg,
+          checkIn: null, 
+          checkOut: null, 
+          villaId: null
+        }
+  } );
+}
+
+async function mapOffer (item, memberData) {
+  var totalCoAgent = Number(item.coAgentAmount);
+  let {policy='fixed', secondPay=0} = item;
+  const ownerId = item.villa.owner;
+  const ownerObj = await ownerData(ownerId);
+  //console.log(ownerObj, 'ownerObj with stripeId with owner id', ownerId);
+  let payOwnerNow=false;
+  if(item.villa.payOwnerNow) {if(item.villa.payOwnerNow === true) {payOwnerNow = true;} }
+  if (totalCoAgent <= 0) {
+    totalCoAgent = Number(0);
+  } 
+  return {
+        "_id": item._id,
+        "title": item.title,
+        "price":item.totalPriceIclProcesssing,
+        "processingFee": item.processingFee,
+        "totalAgent": item.totalAgent,
+        "totalCoAgent": totalCoAgent, 
+        "villa": item.villa.title,
+        "villaId": item.villa._id,
+        "payOwnerNow": payOwnerNow,
+        "pic": item.villa.mainPic,
+        "checkIn": item.checkIn,
+        "checkOut": item.checkOut,
+        "leaderId": item.member,
+        "guestNumber": item.guestNumber,
+        "upFront": item.upFront,
+        "secondPay": secondPay,
+        "secondPayDate": item.secondPayDate,
+        "balance": item.balance,
+        "balanceDate": item.balanceDate,
+        "nightsNumber": item.nightsNumber,
+        "city": item.villa.municipio,
+        'cityId': item.villa._id,
+        "member": memberData,
+        "bidCoins": item.bidCoins,
+        'owner': ownerObj,
+        'name': item.member.firstName,
+        'lastname': item.member.lastName,
+        'phone': item.member.mainPhone,
+        'email': item.member.title,
+        'agent': item.agent,
+        'clientNote': item.clientNote,
+        'policy': policy,
+        'damageDeposit': item.villa.damageDeposit,
+        'licence': item.villa.turisticLicence,
+        'specialTerms': item.specialTerms,
+        'bookingData': item.plusVatCommission,
+        'error': null
+      };
+}
+
+
+export function ownerData (ownerId) {
+return wixData.query("Owners")
+  .eq("_id", ownerId)
+  .find(options)
+  .then( (results) => {
+    if(results.items.length > 0) {
+      const  {stripeId, _id} = results.items[0];
+      return {
+        _id: _id,
+        stripeId: stripeId
+      }
+    } else {
+      return null
+    }
+  } )
+  .catch( (error) => {
+    let errorMsg = error.message;
+    let code = error.code;
+    console.log(code, errorMsg);
+  } );
+}
+
+import {queryAvailable} from 'backend/queryBooked'; // check i f booked
+
+export function checkForBooking(offerId) {
+  return bookingData(offerId).then( data => {
+    console.log('offer retrieved', data);
+    if(data.error === null) {
+      const {checkIn, checkOut, villaId}  = data;
+      return queryAvailable(checkIn, checkOut, villaId).then( bookingsNum => {
+        console.log(bookingsNum, 'number of booking found on query booking');
+        if(bookingsNum > 0) {
+          deleteOffer(offerId);
+          return {
+            available : "booked",
+            bookingObj : null
+          }
+        } else {
+          return {
+            available : "free",
+            bookingObj : data
+          }
+        }
+      });
+    } else {
+        return {
+            available : "booked",
+            bookingObj : null
+        }
+     }
+  }) 
+}
+
+export async function check (offerObj) {
+    const {checkIn, checkOut, villaId, _id} = offerObj;
+    //console.log(checkIn, checkOut, villaId, 'checkIn, checkOut, villaId')
+    const bookingsNum = await queryAvailable(checkIn, checkOut, villaId);
+    console.log(bookingsNum, 'number of booking found on query booking');
+    if(bookingsNum > 0) {
+      var available = "booked";
+      deleteOffer(_id);
+      } else {
+        available = "free";
+      }
+    //console.log(available, "available at the end");
+      return available;   
+}
+
+export async function checkDatesIfBooked (villaId, checkin, checkout) {
+    //console.log(checkIn, checkOut, villaId, 'checkIn, checkOut, villaId')
+    const bookingsNum = await queryAvailable(checkin, checkout, villaId);
+    console.log(bookingsNum, 'number of booking found on query booking');
+    if(bookingsNum > 0) {
+      var available = "booked";
+      } else {
+        available = "free";
+      }
+    //console.log(available, "available at the end");
+      return available;   
+}
+
+function deleteOffer (offerId) {
+  wixData.remove("Offers", offerId, options)
+  .then( (results) => {
+    console.log('offer removed');
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+  } );
+}
+
+export async function member  () {
+  let user = wixUsersBackend.currentUser;
+  if(user.loggedIn === true) {
+    let email = await user.getEmail()
+    let memberData = await memberReturn(email)
+    return memberData;  
+  }
+  else {
+    return {
+      "_id": 'notLoggedIn',
+      "name": undefined,
+      "lastName": undefined,
+      "email": undefined,
+      "phone": undefined
+    }
+  }
+}
+
+function memberReturn (email) {
+//console.log("running member search");
+//console.log(email, "email to search for");
+return wixData.query("MyMembers") 
+    .eq("title", email)
+    .find(options)  
+    .then( (results) => {
+        //console.log(results, "results from member search in booking backend");
+    if(results.length === 1) {
+      let memberData = results.items[0];
+      //console.log(memberData, "results[0].items");
+      let memberObj = {
+        "_id": memberData._id,
+        "name": memberData.firstName,
+        "lastName": memberData.lastName,
+        "email": memberData.title,
+        "phone": memberData.mainPhone
+      }
+      return memberObj;
+    } else { return { "_id": null} }
+     } );
+}
+
+
+// ********** ADDITIONAL STUFF NOT USED NOW  *************************************************
+
+export async function confirmPay (intentId) {
+  console.log(intentId, 'paymentIntentId from collection');
+  const key = await getStripeKey(); // LIVE
+  const stripe = await new Stripe(key); 
+  const resultResponse = await stripe.paymentIntents.confirm(intentId);
+  console.log(resultResponse)
+  return resultResponse 
+}
+
+export async function retrievePayIntent (offerId) {
+  const intentId = await retrieveIntentId(offerId);
+  const key = await getStripeKey(); // LIVE
+  const stripe = await new Stripe(key); 
+  stripe.paymentIntents.retrieve(
+  intentId,
+  function(err, paymentIntent) {
+    console.log(err, paymentIntent, 'err and paymentInetent from retrieve');
+  }
+);
+}
+
+function retrieveIntentId (offerId) {
+  return wixData.query("Offers")
+  .eq('_id', offerId)
+  .find(options)
+  .then( (results) => {
+    if(results.items.length > 0) {
+      let firstItem = results.items[0]; //see item below
+      let intentId = firstItem.intentId;
+      return intentId;
+    } else {
+      console.log('no intent id found for this offer');
+    }
+  } )
+  .catch( (err) => {
+    let errorMsg = err;
+  } );
+}
+
+export function cleanOldBookingCal () {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  let timer = 100;
+  wixData.query('Bookings').limit(999).find(options).then( results => { //.isNotEmpty('iCalUri')
+    if(month===0) {// january so setup one entire old and new year
+      // here you should create and save the next year to add then pass to deleteYearCal to delete the last and add the new
+      const newCalendar = [];
+      for (let index = 0; index < 12; index++) {
+        newCalendar.push([]);
+        if(index === 11) {
+          results.items.forEach(villaCal => {
+            deleteOldYearAddNewBooking(villaCal, year, timer, newCalendar);
+            timer = timer+200;
+          });
+        }
+      }
+      deleteOldAddNewGeneralCal(year);
+    }
+    else{
+      results.items.forEach(villaCal => {
+        cleanCaledarMonth(villaCal, year, month, timer);
+        timer = timer+200;
+      });
+    }
+  });
+}
+
+//clear 1 month
+function cleanCaledarMonth (villaCal, year, mm, timer) {
+  const previuosMonth = mm-1;
+  const yearString = year.toString();
+  setTimeout( () => {
+    villaCal[yearString][previuosMonth] = []; 
+    wixData.update('Bookings', villaCal).then( updated =>{console.log('updated cal villa ', villaCal.villa)})
+    .catch( (err) => {
+      wixData.update('Bookings', villaCal);
+    } );
+  }, timer);
+}
+
+// delete 1 year and add one new for array of booking for each villa
+function deleteOldYearAddNewBooking (villaCal, year, timer, newCalendar) {
+  setTimeout( () => {
+    villaCal[(year-1).toString()] = null; 
+    villaCal[(year+2).toString()] = newCalendar;
+    console.log(villaCal, 'to update')
+    wixData.update('Bookings', villaCal).then( updated =>{console.log('updated cal villa ', updated)})
+    .catch( (err) => {
+      wixData.update('Bookings', villaCal);
+    } );
+  }, timer);
+}
+
+// add 1 generic calendar for all and remove 1 old
+async function deleteOldAddNewGeneralCal (year) {
+  wixData.query('Calendars').eq('title', (year-1).toString()).find(options).then( results => {
+    wixData.remove('Calendars', results.items[0]._id)
+    .catch( (err) => {
+      wixData.remove('Calendars', results.items[0]._id);
+    } );
+  });
+  const newCal = await getFullYearCal(year+2);
+  const newCalObj = {
+    title: (year+2).toString(),
+    calendarArray: newCal
+  }
+  wixData.insert('Calendars', newCalObj).then( results => {
+    console.log('inserted');
+  })
+  .catch( (err) => {
+      wixData.insert('Calendars', newCalObj)
+  } );
+}
+

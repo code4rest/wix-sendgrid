@@ -1,0 +1,200 @@
+import wixData from 'wix-data';
+import {dynamicEmail} from 'backend/sendGrid';
+import {findCheckinDueNextWeek} from 'backend/overdueCheckin'; 
+import {getOneBookingTotalPayments} from 'backend/overduePayments';
+var options = {
+    "suppressAuth": true,
+    //"suppressHooks": true,
+};
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' };
+
+
+function formatMoney (number) {
+    const options = { style: 'currency', currency: 'EUR' };
+    return new Intl.NumberFormat('en-GB', options).format(number);
+}
+
+//import {dynamicEmailTest} from 'backend/sendGrid';
+
+export async function findPaymentsDueNextWeek () {
+    let emailSent = [];
+    return searchPaymentsDueNextWeek().then( contracts => {
+        //console.log( contracts, 'contracts')
+        if (contracts[0].error !== true) {
+            let p1 = new Promise( (resolve, reject) => {
+                for (let i = 0; i <= contracts.length; i++) { 
+                    console.log(contracts[i].channel, contracts[i], 'channel');
+                    if(contracts[i].channel === 'Hedo') {
+                        let {cashUponArrival=false, totDue, extraCheckinEur, dueDate, email='NA', customerFirstName, reference, daysOverdue, booking} = contracts[i];
+                        getOneBookingTotalPayments(booking)
+                        .then( (totPaid) => {
+                            let gap = Number(totDue) - Number(totPaid);
+                            //console.log(reference, 'reference and gap', gap);
+                            if ( gap > 10 && cashUponArrival === false) { // not fully paid and not cash upon arrival
+                                contracts[i].totPaid = totPaid;
+                                contracts[i].gap = contracts[i].totDue - totPaid;
+                                // send email to each overDue
+                                let dynamicJSON = {
+                                    'name': customerFirstName,
+                                    'reference': reference,
+                                    'price': formatMoney(totDue),
+                                    'extraCheckin': formatMoney(extraCheckinEur),
+                                    'totPaid': formatMoney(totPaid),
+                                    'gap': formatMoney(gap),
+                                    'dueDate': dueDate.toLocaleDateString('en-GB', optionsDate)
+                                }
+                                if (email !== 'NA' && emailSent.findIndex( x => x === email) === -1) {
+                                    //console.log(dynamicJSON, 'dynamicJSON and email to send it to', email, daysOverdue, 'days overdue');
+                                    dynamicEmail('info@sakamoto.com', email, 'Alert, your payment is due next week', 'findPaymentsDueNextWeek', true, 'paymentDueNextWeek', dynamicJSON);
+                                    emailSent.push(email);
+                                }
+                            }
+                            if (i === contracts.length) {
+                                //console.log(overDueArray, 'to return from callback')
+                                resolve('overdue email settled');
+                            }
+                        });
+                    }
+                }
+            })
+            .catch( (err) => {
+                console.log(err, 'error in getTotalPayments')
+            } );
+            return p1.then( (dueNextWeekArray) => { 
+                //console.log(dueNextWeekArray, 'XXXXXX');
+                findCheckinDueNextWeek();
+                return 'done';
+            });
+        }
+    })
+}   
+
+// main function
+export async function findPaymentsDueNextWeekOLD () {
+    let emailSent = [];
+    return searchPaymentsDueNextWeek().then( contracts => {
+        //console.log( contracts, 'contracts')
+        if (contracts[0].error !== true) {
+            let counter = 0;
+            let p1 = new Promise( (resolve, reject) => {
+                let dueNextWeek = [];
+                contracts.forEach( (contract) => {
+                    counter++;
+                    //console.log(counter, contract.channel, 'counter');
+                    if(contract.channel === 'Hedo') {
+                        let {cashUponArrival=false, totDue, extraCheckinEur, dueDate, email='NA', customerFirstName, reference, daysOverdue, booking} = contract;
+                        getOneBookingTotalPayments(booking)
+                        .then( (totPaid) => {
+                            let gap = Number(totDue) - Number(totPaid);
+                            //console.log(reference, 'reference and gap', gap);
+                            if ( gap > 10 && cashUponArrival === false) { // not fully paid and not cash upon arrival
+                                contract.totPaid = totPaid;
+                                contract.gap = contract.totDue - totPaid;
+                                dueNextWeek.push(contract);
+                                // send email to each overDue
+                                let dynamicJSON = {
+                                    'name': customerFirstName,
+                                    'reference': reference,
+                                    'price': formatMoney(totDue),
+                                    'extraCheckin': formatMoney(extraCheckinEur),
+                                    'totPaid': formatMoney(totPaid),
+                                    'gap': formatMoney(gap),
+                                    'dueDate': dueDate.toLocaleDateString('en-GB', optionsDate)
+                                }
+                                if (email !== 'NA' && emailSent.findIndex( x => x === email) === -1) {
+                                    //console.log(dynamicJSON, 'dynamicJSON and email to send it to', email, daysOverdue, 'days overdue');
+                                    dynamicEmail('info@sakamoto.com', email, 'Alert, your payment is due next week', 'findPaymentsDueNextWeek', true, 'paymentDueNextWeek', dynamicJSON);
+                                    emailSent.push(email);
+                                }
+                            }
+                            if (counter === contracts.length) {
+                                //console.log(overDueArray, 'to return from callback')
+                                resolve(dueNextWeek);
+                            }
+                        });
+                    }
+                });
+            })
+            .catch( (err) => {
+                console.log(err, 'error in getTotalPayments')
+            } );
+            return p1.then( (dueNextWeekArray) => { 
+                //console.log(dueNextWeekArray, 'what we get to return');
+                findCheckinDueNextWeek();
+                return 'done';
+            });
+        }
+    })
+}                   
+
+
+export function searchPaymentsDueNextWeek () {
+    let today = new Date();
+    let nextWeek = today.getTime() + 6.048e+8;
+    let plusOneDay = nextWeek + 8.64e+7;
+    let minusOneDay = nextWeek - 8.64e+7;
+    return wixData.query('Contracts')
+    .ge('balanceDate', new Date(minusOneDay)) 
+    .le('balanceDate', new Date(plusOneDay)) 
+    .ne('deleted', true)
+    .include('member')
+    .include('villa')
+    .limit(999)
+    .find(options)
+    .then((results) => {
+        //console.log(results.totalCount, results.totalCount > 0)
+        if (results.totalCount > 0) {
+            return results.items.map( (contract) => {
+                //console.log(contract.member, 'contract.member');
+                let {lastName, firstName, mainPhone, title, _id} = contract.member; 
+                if (!contract.member) {
+                    let {lastname, name, email='NA'} = contract;
+                    lastName = lastname;
+                    firstName = name; 
+                    mainPhone = null; 
+                    title=email;
+                    _id=null;
+                }
+                let {priceNoExtraBeds, extraBedEur=0, extraCheckinEur=0, balanceDate, cashBalance=false, totalPriceIclProcesssing, processingFee, channel='None'} = contract;
+                let {mainPic, agentDoCleaning} = contract.villa;
+                let totalDue = priceNoExtraBeds + extraBedEur + extraCheckinEur + processingFee;
+                const overdueDays = Math.round((+new Date() - (+balanceDate)) / 8.64e+7)*-1;
+                return {
+                    //contract
+                    booking: contract._id,
+                    reference: contract.title,
+                    extraCheckinEur: extraCheckinEur,
+                    totDue: totalDue,
+                    dueDate: balanceDate,
+                    cashUponArrival: cashBalance,
+                    //payments
+                    totPaid:0,
+                    gap: totalDue,
+                    //villa
+                    villaName: contract.villa.title,
+                    villa: contract.villa._id,
+                    pic: mainPic,
+                    //customer
+                    member: _id,
+                    customerLastName: lastName,
+                    customerFirstName: firstName,
+                    phone:mainPhone,
+                    email: title,
+                    // owner
+                    owner: contract.owner,
+                    // agent
+                    agent: contract.agent,
+                    error:false,
+                    daysOverdue: overdueDays,
+                    channel: channel
+                }
+            })  
+        } else {return []}
+    })
+    .catch( (error) => {
+        console.log(error, 'error in searchOverdueContracts');
+        return [{error:true}]
+     } );
+}
+

@@ -1,0 +1,102 @@
+import wixData from 'wix-data';
+/*
+import wixUsersBackend from 'wix-users-backend';
+import {Stripe} from 'stripe';
+import {getStripeKey} from 'backend/secrets.js'
+import {dynamicEmail} from 'backend/sendGrid';
+*/
+
+var options = {
+"suppressAuth": true,
+};
+
+// damagePayment schema
+// title  
+// _id    
+// booking  
+// paidEur  
+// refundEur  
+// payMethod  
+// isCaptured 
+// damageDescription
+// galleryDamage
+// isDamageItem 
+// damageToChargeEur  
+// note 
+// signature  
+// payDate
+async function getPaymentDamageDeposit (bookingId) {
+  console.log(bookingId, 'FUCKING ID');
+  return wixData.query('damagePayment')
+  .eq('booking', bookingId)
+  .find(options)
+  .then( results => {
+    if(results.totalCount > 0) {return results.items;} else { return [];}
+  })
+}
+
+export async function calcDamage  (bookingId) {
+  let damageAllPayment = await getPaymentDamageDeposit(bookingId);
+  console.log(damageAllPayment, 'payments found for damage');
+  if (damageAllPayment.length > 0) {
+  let payNum = damageAllPayment.length;
+  console.log(payNum, 'paynum');
+  let p1 = new Promise( (resolve, reject) => {
+    let damagePaid = 0;
+    let refundedEur = 0;
+    let counter = 0;
+    let damageData = [];
+    let damageEur = 0;
+    damageAllPayment.forEach(async (pay) => {
+      //console.log(pay.isDamageItem, 'pay.isDamageItem value in loop');
+      if (pay.paidEur) {
+        damagePaid = damagePaid + pay.paidEur;
+      }     
+      if (pay.refundEur) {
+        refundedEur = refundedEur + pay.refundEur;
+      } 
+      if (pay.isDamageItem === true) {
+        damageEur = damageEur + pay.damageToChargeEur;
+        var galleryArray = pay.galleryDamage;
+        let damageItem = {
+          _id: counter.toString(),
+          gallery: galleryArray,
+          title: pay.title,
+          description: pay.damageDescription,
+          singleDamageEur: pay.damageToChargeEur,
+        };
+        damageData.push(damageItem);
+      }
+      counter++;
+    })
+    //console.log(counter, payNum, 'payNum and counter')
+    if (counter === payNum) {
+      console.log(damagePaid, refundedEur, damageEur, damageData, 'damagePaid, refundedEur, damageEur, damageData');
+      resolve([damagePaid, refundedEur, damageEur, damageData]);
+    }
+  });
+  
+  return p1.then((values) => {
+    console.log(values, 'totalDamagePaid before return')
+    return values;
+    });
+  } else {
+    return [0, 0, 0, []]; // return in case no payment yet for damages
+  }
+}
+
+/*
+let gallery = [{
+  "type": "image",
+  "description": description,
+  "title": title,
+  "src": "wix:image://v1/99bc1c6f66444769b531221214c885ac.jpeg/A%20View.jpeg#originWidth=3264&originHeight=2448"
+}, {
+  "type": "video",
+  "description": title,
+  "title": "Another View",
+  "src": "wix:video://v1/80c05f_e2c524db1f264178a8558c92dbf76fb0/_#posterUri=80c05f_e2c524db1f264178a8558c92dbf76fb0f000.jpg&posterWidth=1920&posterHeight=1080"
+}];
+*/
+
+

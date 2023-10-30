@@ -1,0 +1,1023 @@
+import wixData from 'wix-data';
+import {searchAgent} from 'backend/agents.jsw';
+import {dynamicEmail} from 'backend/sendGrid';
+
+var options = {
+"suppressAuth": true,
+};
+
+const optionsDate = { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric'}; 
+
+import {getSecret} from 'wix-secrets-backend';
+
+export function getProcessing() {
+  return getSecret("processingFee")
+    .then((secret) => {
+      // console.log(secret, 'processing fee returned from secret')
+      return secret;
+    })
+    .catch((error) => {
+      console.log(error);
+    });
+}
+
+
+export async function searchCustomer (inquiryId) { // add argument - agentId - if you want to show just lead for this agent
+  // console.log(inquiryId, 'inquiryId');
+  let memberInquiry = await wixData.query("Inquiries") 
+    .include('myMember')
+    .eq('_id', inquiryId) // to show onlynthe city they operate in
+    .find(options); 
+    // console.log(memberInquiry, memberInquiry.items, 'member of this inquiry')
+    const inquiryItem = memberInquiry.items;
+    const myMember = inquiryItem[0].myMember;
+    console.log(inquiryItem, 'full Inquiry', myMember, 'myMember');
+    return myMember
+}
+
+function villaDataOffer (villaId) {
+  return wixData.query('Villas')
+  .eq("_id", villaId)
+  .find(options)
+  .then( (results) => {
+    let { title, comissionPercentage = 15, people, extraBeds=0, extraBedPrice=0, extraBedtoAgent=false, plusVatCommission=false, cleningFee=0, agentDoCleaning=false, coAgentCommPerc=7.5, city, totGuests, villaOwner} = results.items[0];
+    return {
+      villaName: title, 
+      commissionPerc: comissionPercentage,
+      villaMaxCapacity: totGuests,
+      extraBedsAvailable: extraBeds,
+      defaultCapacity: people,
+      extraBedPrice: extraBedPrice,
+      extraBedtoAgent: extraBedtoAgent,
+      plusVatCommission: plusVatCommission,
+      cleaningFee: cleningFee,
+      agentDoCleaning: agentDoCleaning,
+      coAgentCommPerc: coAgentCommPerc,
+      city: city,
+      mainPic: results.items[0].mainPic,
+      villaOwner: villaOwner
+    }
+  });
+}
+
+export async function addOffer (offersArray) {
+  let response = await workoutAddOffer(offersArray);
+  // console.log(response, 'before going frontend');
+  return response;
+}
+
+export function addBestRemoveOld (offersArray) {
+  console.log(offersArray);
+  let removeOld = new Promise( (resolve, reject) => {
+    resolve(removeOldOffer(offersArray[0].villa, offersArray[0].inquiry));
+  });
+  let addBest = new Promise( (resolve, reject) => {
+    resolve(workoutAddOffer(offersArray));
+  });
+  return Promise.all([addBest, removeOld]) 
+  .then( ( (values) => {
+      return values[0];
+  }))
+}
+
+function removeOldOffer (villaId, inquiryId) {
+  return wixData.query("Offers").eq('inquiry', inquiryId).eq("villa", villaId).find(options).then( offers => {
+    let counter = 0;
+    if(offers.totalCount > 0) {
+      offers.items.forEach( offer => {wixData.remove('Offers', offer._id)});
+      counter++;
+      if(offers.totalCount === counter) {return 'done'}
+    }
+    else {return 'done'}
+  })
+  .catch( err => 'error');
+}
+
+
+async function workoutAddOffer (offersArray) {
+  console.log(offersArray, 'offersArray');
+  let villasPicsOb = {};
+  if (offersArray.vatPerc) {
+    var vatPerc = offersArray.vatPerc;
+  } else {
+    vatPerc = 21;
+  }
+  const agentIdInOffers = offersArray[0].agent; // villa agent who offered the villa
+  const agentLoggedInData = await searchAgent();
+  const agentLoggedId = agentLoggedInData[0];
+  const inquiryId = offersArray[0].inquiry;
+  const inquiryData = await getInquiryData(inquiryId);
+  let {member, guestNumber, nightsNumber} = inquiryData; //guestName, guestLastname, guestEmail,
+  let processingFeeString = await getProcessing(); //ALERT we set 6% of  processing
+  let processingFee = Number(processingFeeString);
+  const today = new Date();
+  const todayMS = today.getTime();
+  var arraySubmitted = [];
+  console.log('agentIdInOffers, agentLoggedId', agentIdInOffers, agentLoggedId);
+  if (agentIdInOffers === agentLoggedId) {
+    let p1 = new Promise( (resolve, reject) => {
+      let counter = 0;
+      let length = offersArray.length;
+      offersArray.forEach( async (offer, index) => { // *********************** running the forEach
+        offer.coAgentAmount = 0;
+        let timeDiff = Math.abs(offer.checkOut.getTime() - offer.checkIn.getTime());
+        var diffDays = Math.ceil(timeDiff / (1000 * 3600 * 24));
+        const nightsNumberCal = diffDays;
+        if (nightsNumber !== nightsNumberCal) {
+          nightsNumber = nightsNumberCal;
+        }
+        // about starting point 
+        const leadAgent = inquiryData.leadAgent;// who got the customer
+        offer.coAgent = leadAgent;
+        var agentExtraBedsEur = 0;
+        var extraBedEur = 0;
+        // SECTION about offer general data
+        const checkinMs = offer.checkIn.getTime();
+        const price = Number(offer.price); // this is the final full price of the offer which includes  the extra beds and VAT but NOT processing fee which is added by the marketplace
+        const processingFeeEur = Math.floor(price * (processingFee/ 100));
+        const totalPriceIclProcesssing = Math.floor(price + processingFeeEur);
+        const balanceDateMs =  Math.abs(checkinMs - 3628800000); // the 6 weeks prior arrival benchmark
+        // CASE NO BALANCE DATE SET BY AGENT
+        let upFront = Math.ceil(offer.upFront + processingFeeEur);
+        let secondPay = Math.ceil(offer.secondPay);
+        let balance = Number(totalPriceIclProcesssing - upFront- secondPay);
+        let balanceDate = new Date(balanceDateMs);
+        let secondPayDate = offer.secondPayDate;
+        if(offer.balanceDate && offer.balanceDate > new Date()) { balanceDate = offer.balanceDate}
+        else if(!offer.balanceDate) {
+          const daysToBalanceMS = balanceDateMs - todayMS;
+          // console.log(todayMS, balanceDateMs,daysToBalanceMS);
+          if (todayMS >= balanceDateMs || daysToBalanceMS <= 3628800000) { // if balance less then 42 days from now
+            upFront = totalPriceIclProcesssing; // we ask now 100% and today balance day
+            secondPay = 0;
+            balance = 0;
+            balanceDate = new Date();
+            secondPayDate = null;
+          }
+        }
+        const bidCoins = Number(offer.bidCoins);
+        offer.bidCoins = bidCoins; // to make them numbers
+        // SECTION about villa Data
+        const villaId = offer.villa;
+        const villaData = await villaDataOffer(villaId);
+        const picConverted = await getFullImageURL(villaData.mainPic);
+        villasPicsOb[villaData.villaName] = picConverted;
+        const {villaName, commissionPerc=15, villaMaxCapacity, extraBedsAvailable = 0, defaultCapacity, extraBedPrice = 0, extraBedtoAgent = false, plusVatCommission = false, city, villaOwner} = villaData; //coAgentCommPerc=7.5,
+        let {cleaningFee = 0, agentDoCleaning = false} = villaData;
+        // console.log(villaData, 'villaData');
+        // SECTION about extra beds
+        //console.log(defaultCapacity, "default capacity which is max Capacity - extrabeds which folllow in order", villaMaxCapacity);
+        var extraBedsBooked = Number(guestNumber - defaultCapacity);//extra bedNum
+        //console.log(extraBedsBooked, ' extraBedsBooked which is  guestNumber minus defaultCapacity which follow', guestNumber, defaultCapacity);
+        if (extraBedsBooked > 0) {
+          extraBedEur = Number(extraBedsBooked * extraBedPrice * nightsNumber); // extra beds price
+        } else { 
+          extraBedEur = 0;
+          extraBedsBooked = 0;
+          }
+        const priceNoExtraBeds = Number(price - extraBedEur); // net price
+        //console.log(priceNoExtraBeds, 'priceNoExtraBeds');
+        // SECTION about base commission
+        var commissionEur = Number(priceNoExtraBeds * commissionPerc / 100); // we calculate the commission on the price net of extra beds and then check if the comm on extra beds is due
+        //console.log(extraBedsBooked, extraBedPrice, extraBedEur, 'extraBedsBooked = extraBedPrice * extraBedEur'); 
+        if (extraBedtoAgent === true && extraBedEur > 0) { // if we get extra beds comm then add it // bool if agent get commission on beds
+              agentExtraBedsEur = Math.floor(extraBedEur * commissionPerc / 100); commissionPerc
+              var extraBedsOwner = Math.floor(extraBedEur - agentExtraBedsEur);
+              let commissionEurString = (commissionEur + agentExtraBedsEur).toFixed(2); //if comm on bed then add bedCommission on booking but no processing fee
+              commissionEur = parseInt(commissionEurString);
+        } else {
+          extraBedsOwner = Number(extraBedEur);
+          }
+        if (agentDoCleaning !== true) {cleaningFee = 0}
+        // SECTION about coAgent and agent IF coAgent
+        //console.log(coAgent, 'we have co agent');
+        var leadAgentEur =0; // agent who got the customer
+        if (leadAgent !== agentIdInOffers) { // if the co/lead agent are not the same
+          // ALERT GET THIS PART WHICH IS TRICKY **********************************************************
+          //console.log('we have coagent and it is not us');
+          offer.coAgent = leadAgent;
+          var commissionSplit = true;
+          //let ratioAgentCoAgent = 0.5;//Number(coAgentCommPerc) / Number(commissionPerc);
+          //leadAgentEur = Math.floor(+commissionEur * +ratioAgentCoAgent);
+          leadAgentEur = Math.floor(+commissionEur/2);
+          // if (leadAgentEur > 0) {
+          //   commissionEur = Math.floor(+commissionEur - +leadAgentEur); // we got coAgent so let's deduct his fucking commission
+          // } else { 
+          //   commissionSplit = false;
+          //   leadAgentEur = 0;
+          //   }
+          commissionEur = leadAgentEur;
+          let vatEurLeadAgent = Number((leadAgentEur *  vatPerc / 100).toFixed(2)); 
+          //vatEurLeadAgent = Math.round(vatEurLeadAgent * 100)/100;
+          //alert WE ADDED THE VAT (so vat included for coAgent) WHILE FOR THE VILLA AGENT WE HAVE A SEPARATE FIELD IN THE DATABASE
+          leadAgentEur = leadAgentEur + vatEurLeadAgent; // this will be added in the stripeElements for payment intent function
+          offer.coAgentAmount = leadAgentEur;
+          offer.commissionSplit = commissionSplit;
+          //console.log(ratioAgentCoAgent, commissionEur, coAgentEur, 'ratioAgentCoAgent, commissionEur, coAgentEur')
+        }
+        // about final amount to agent
+        var totalAgent = Number(leadAgentEur);  // starting with the coAgent amount
+        if(agentIdInOffers !== villaOwner) {// if the villa agent is not the owner, we need to keep the villaAgent commission and cleaning else he keep it
+        let totalVillaAgent = cleaningFee + commissionEur;
+          totalAgent = Math.floor(totalAgent + totalVillaAgent); // if owner is not also submitting agent (case owner managing as agent) then we add the commission to be retained else just don't collect it and we let the owner take it
+          if (plusVatCommission === true) { // add vat if to be added
+            let vatEur = totalVillaAgent *  vatPerc / 100; // only on the villaAgent because Lead agent already added
+            vatEur = Math.round(vatEur * 100)/100;
+            //console.log(vatPerc, plusVatCommission, vatEur > 0 && plusVatCommission, 'vatPerc, plusVatCommission, vatPerc > 0 && plusVatCommission');
+            totalAgent += vatEur; 
+            offer.vatOncommission = vatEur;
+          } else { 
+            offer.vatOncommission = 0; 
+            //console.log('no VAT');
+            }
+        }
+        //console.log(totalAgent, ' totalAgent which is  = to the sum of ', agentExtraBedsEur + commissionEur + processingFeeEur + cleaningFee + bidCoins, 'agentExtraBedsEur + commissionEur + processingFeeEur + cleaningFee + bidCoins' );
+        //about ownerTotPrice
+        totalAgent = Math.round(totalAgent + processingFeeEur + bidCoins); // adding now processingFeeEur + bidCoins which are VAT included always
+        const balanceDateString = balanceDate.toLocaleDateString('en-GB', optionsDate);
+        offersArray[index].balanceDateString = balanceDate.toLocaleDateString('en-GB', optionsDate);
+        //console.log(extraBedsOwner, processingFeeEur, coAgentCommPerc, commissionEur, 'extraBedsOwner, processingFeeEur, coAgentCommPerc, commissionEur');
+        //console.log(offer, 'offer before setting backend data');
+        //offer._id = guestName + guestLastname + new Date().getTime().toString();
+        offer._id = Math.random().toString(36).substring(2, 15) + todayMS.toString();
+        offer.member = member; 
+        offer.guestNumber = guestNumber; 
+        offer.nightsNumber = nightsNumber; 
+        offer.upFront = upFront;
+        offer.secondPay = secondPay;
+        offer.secondPayDate = secondPayDate;
+        offer.balance = balance;
+        offer.balanceDate = balanceDate; 
+        offer.extraBedNo = extraBedsBooked;
+        offer.extraBedEur = extraBedEur;
+        offer.extraBedsComm = agentExtraBedsEur;
+        offer.extraBedsOwner  = extraBedsOwner;
+        offer.totalPriceIclProcesssing = totalPriceIclProcesssing; //ALERT WE HAVE EN ERROR IN THE FILED NAME. KEEP THE TRIPLE S
+        offer.processingFee = processingFeeEur;
+        offer.commission = commissionEur;
+        offer.totalAgent = totalAgent;
+        offer.vatPerc = vatPerc,
+        offer.priceNoExtraBeds = priceNoExtraBeds; // this seems uselss
+        offer.city = city;
+        offer.cleaningFee = cleaningFee;
+        offer.villaName = villaName;
+        offer.plusVatCommission = plusVatCommission;
+        offer.agentDoCleaning = agentDoCleaning;
+        //console.log(offer, 'offer after setting backend data');
+        counter++;
+        wixData.insert("Offers", offer, options)
+        .then ( (results) => {
+        //console.log(results, "offer inserted");
+        arraySubmitted.push('submitted');  
+        if (counter === length) {
+        //console.log(counter === length, counter,length, 'promise solved');
+        //console.log('arraySubmitted', arraySubmitted);
+        resolve(arraySubmitted);
+        }
+        })
+        .catch( (err) => {
+          let errorMsg = err;
+          //console.log(errorMsg, 'error message to insert offer');
+          arraySubmitted.push(errorMsg);
+          if (counter === length) {
+            //console.log(counter === length, counter,length, 'promise solved');
+            //console.log('arraySubmitted', arraySubmitted);
+            resolve(arraySubmitted);
+          }
+        } );
+
+    });
+    });
+
+    return p1.then( (array) => { 
+      // console.log(array, 'array of offers submitted');
+      //sending email
+      return searchCustomer(inquiryId)
+      .then( (customerData) => {
+        const customerName = customerData.firstName;
+        const customerEmail = customerData.title;
+        sendEmail(customerName, customerEmail, offersArray, villasPicsOb);
+        return arraySubmitted;
+      })
+    });
+  } 
+  else {
+    console.log('agent does not match')
+    return "agent does not match";
+  }
+}
+
+async function sendEmail (customerName, customerEmail, offersArray, villasPicsOb) {
+  // console.log(customerName, customerEmail, offersArray, 'customerName, customerEmail, offersArray before map');
+  let offers = await mapOfferForEmailJSON(offersArray);
+  let counter = 0;
+  offers.forEach( async (offer, index) => {
+    offers[index].pic = villasPicsOb[offer.villaName];
+    let policy = offers[index].policy;
+    if(policy === 'covid') {offers[index].policy = policy + ' protection';}
+    else if(policy === 'fixed'|| policy === 'flexible') {offers[index].policy = policy + ' dates';}
+    counter++;
+    console.log('EACH offer with pic', offers);
+    console.log('counter===offers.length', counter===offers.length, counter, offers.length);
+    if(counter===offers.length) {
+      let dynamicJson = {
+        name: customerName,
+        offer: offers,
+      }
+      console.log('THIS IS dynamic JSON', dynamicJson);
+      //                 fromEmail,         toEmail,         subjectString,          sendingFunction,   booleanIfToAdmin,templateId,  JSON    
+      dynamicEmail('info@sakamoto.com', customerEmail, "Great offers for your villa!", "Offer submission", true, 'submitOffer', dynamicJson); // this send the email from sendGrid          
+    }
+  });
+}
+
+// converts a wix-image address to a URL that it useable from outside Wix
+export function getFullImageURL(imageSRC) {
+  let strReturnImage = "";
+  if (imageSRC.startsWith("image:")) {
+    let wixImageURL = "";
+    wixImageURL = "https://static.wixstatic.com/media/";
+    let wixLocalURL = "";
+    wixLocalURL = imageSRC.replace('image://v1/', '');
+    wixLocalURL = wixLocalURL.substr(0, wixLocalURL.indexOf('/'));
+    strReturnImage = wixImageURL + wixLocalURL;
+  } 
+  else if (imageSRC.startsWith("wix:image:")) {
+    let wixImageURL = "";
+    wixImageURL = "https://static.wixstatic.com/media/";
+    let wixLocalURL = "";
+    wixLocalURL = imageSRC.replace('wix:image://v1/', '');
+    wixLocalURL = wixLocalURL.substr(0, wixLocalURL.lastIndexOf('/'));
+    strReturnImage = wixImageURL + wixLocalURL;
+  }
+  else {
+        strReturnImage = imageSRC;
+    }
+  return strReturnImage;
+}
+
+function mapOfferForEmailJSON (offersArray) {
+  return offersArray.map( (offer) => {
+    let {villaName, checkIn, checkOut, totalPriceIclProcesssing, nightsNumber, guestNumber, upFront, balance, balanceDateString, policy, link, secondPay=0, secondPayDate} = offer;
+    if(+secondPay < 1) {
+      secondPayDate=null;
+      secondPay = null;
+      var secondDateLabel = null;
+      var secondPaymentLabel = null;
+    }
+    else {
+      secondPayDate = secondPayDate.toLocaleDateString('en-GB', optionsDate);
+      secondDateLabel = '2nd Pay due on: ';
+      secondPay = '€'+secondPay;
+      secondPaymentLabel = '2nd Pay amount: ';
+    }
+    return {
+      "villaName": villaName,
+      "checkin": checkIn.toLocaleDateString('en-GB', optionsDate),
+      "checkout": checkOut.toLocaleDateString('en-GB', optionsDate),
+      "nights": nightsNumber.toString(),
+      "guests": guestNumber.toString(),
+      "price": totalPriceIclProcesssing.toString(),
+      "upfront": upFront.toString(),
+      "secondPaymentLabel": secondPaymentLabel,
+      "secondPay": secondPay,
+      "secondDateLabel": secondDateLabel,
+      "secondPayDate": secondPayDate,
+      'balance': balance.toString(),
+      'balanceDateString': balanceDateString,
+      'policy': policy,
+      'link': link
+    }
+  })
+}
+
+
+export function acceptCounterOffer  (id) { //propertyToChange 
+  return wixData.get("Offers", id, options)
+    .then( async (offer) => {
+    const counterOffer = Number(offer.counterOffer);
+    const processingFeePerc = await getProcessing();
+    const processingEur = Math.floor(counterOffer / (Number(processingFeePerc) + 100) * Number(processingFeePerc));
+    offer.processingFee = processingEur;
+    const price = counterOffer - processingEur; // this is the final full price of the offer which includes  the extra beds and VAT but NOT processing fee which is added by the marketplace
+    offer.price = price;
+    // SECTION about offer general data
+    const checkinMs = offer.checkIn.getTime();
+    const balanceDateMs =  Math.abs(checkinMs - 3628800000);
+    //console.log(checkinMs, balanceDateMs, 'checkinMs, balanceDateMs');
+    const villaId = offer.villa;
+    const villaData = await villaDataOffer(villaId);
+    const {commissionPerc, plusVatCommission = false, coAgentCommPerc = 0} = villaData;
+    const todayMS = new Date().getTime();
+    const daysToBalanceMS = todayMS - balanceDateMs;
+    //console.log(processingFeePerc, 'processingFeePerc', processingFeeEur, 'processing fee in Eur');
+    offer.totalPriceIclProcesssing = counterOffer; //ALERT WE HAVE EN ERROR IN THE FILED NAME. KEEP THE TRIPLE S
+    //console.log(price, totalPriceIclProcesssing, 'price and totalPriceIclProcesssing');
+    if (todayMS >= balanceDateMs && daysToBalanceMS <= 3628800000) { // if balance less then 42 days from now
+    //console.log(todayMS >= balanceDateMs && daysToBalanceMS <= 3628800000, 'todayMS >= balanceDateMs && daysToBalanceMS <= 3628800000');
+      var upFront = counterOffer; // we ask now 100% and today balance day
+      var balance = 0;
+      var balanceDate = new Date(todayMS);
+    } else {
+      upFront =  Number(offer.upFront);
+      balance = Number(counterOffer - upFront);
+      balanceDate = new Date(balanceDateMs);
+    }
+    // SECTION about villa Data
+    
+    // SECTION about extra beds
+    //console.log(defaultCapacity, "default capacity which is max Capacity - extrabeds which folllow in order", villaMaxCapacity);
+    //console.log(extraBedsBooked, ' extraBedsBooked which is  guestNumber minus defaultCapacity which follow', guestNumber, defaultCapacity);
+    let {extraBedEur=0, extraBedsComm=0, cleaningFee=0, bidCoins=0} = offer;
+    // extra beds price
+    const priceNoExtraBeds = Number(price - extraBedEur); // net price
+    //console.log(priceNoExtraBeds, 'priceNoExtraBeds');
+    // SECTION about base commission
+    var commissionEur = Number(priceNoExtraBeds * commissionPerc / 100); // we calculate the commission on the price net of extra beds and then check if the comm on extra beds is due
+    //console.log(extraBedsBooked, extraBedPrice, extraBedEur, 'extraBedsBooked = extraBedPrice * extraBedEur'); 
+    
+    // SECTION about coAgent and agent IF coAgent
+    const coAgent = offer.coAgent;
+    //console.log(coAgent, 'we have co agent');
+    if (offer.coAgentAmount > 0) { // if we have a co agent and it's not us
+      // ALERT GET THIS PART WHICH IS TRICKY **********************************************************
+      console.log('we have coagent and it is not us');
+      offer.commissionSplit = true;
+      const ratioAgentCoAgent = Number(coAgentCommPerc / commissionPerc)
+      var coAgentEur = Math.floor(commissionEur * ratioAgentCoAgent);
+      commissionEur = Math.floor(commissionEur - coAgentEur); // we got coAgent so let's deduct his fucking commission
+      //console.log(ratioAgentCoAgent, commissionEur, coAgentEur, 'ratioAgentCoAgent, commissionEur, coAgentEur')
+    } else { 
+        offer.commissionSplit = null;
+        coAgentEur = 0;
+    }
+    offer.coAgentAmount = coAgentEur;
+    // end section coAgent
+
+    // about final amount to agent
+    let totalAgent = parseInt((extraBedsComm + commissionEur + cleaningFee),10);  // here missing still processingFeeEur + bidCoins which has no VAT
+    const vatPercString = await getSecret('vat');
+    var vatPerc = Number(vatPercString);
+    if (vatPerc > 0 && plusVatCommission === true) { // add vat if to be added
+      let vatEur = totalAgent *  vatPerc / 100; 
+      vatEur = Math.round(vatEur * 100)/100;
+      //console.log(vatPerc, plusVatCommission, vatEur > 0 && plusVatCommission, 'vatPerc, plusVatCommission, vatPerc > 0 && plusVatCommission');
+      totalAgent = totalAgent + vatEur;
+      offer.vatOncommission = vatEur;
+    } else { 
+      offer.vatOncommission = 0; 
+      //console.log('no VAT');
+      }
+    //console.log(totalAgent, ' totalAgent which is  = to the sum of ', agentExtraBedsEur + commissionEur + processingFeeEur + cleaningFee + bidCoins, 'agentExtraBedsEur + commissionEur + processingFeeEur + cleaningFee + bidCoins' );
+    //about ownerTotPrice
+    totalAgent = parseInt((totalAgent + processingEur + bidCoins), 10); // adding now processingFeeEur + bidCoins which are VAT included always
+    const balanceDateString = balanceDate.toLocaleDateString('en-GB', optionsDate); //new Intl.DateTimeFormat('en-GB', optionsDate).format(balanceDate);
+    //console.log(extraBedsOwner, processingFeePerc, processingFeeEur, coAgentCommPerc, commissionEur, 'extraBedsOwner, processingFeePerc, processingFeeEur, coAgentCommPerc, commissionEur');
+    //console.log(offer, 'offer before setting backend data');
+    const newId = Math.random().toString(36).substring(2, 15) + todayMS.toString(); 
+    balanceDate.setHours(22);
+    balanceDate.setMinutes(0);
+    balanceDate.setSeconds(0);
+    balanceDate.setMilliseconds(0);
+    offer.balanceDate = balanceDate; 
+    offer.upFront = upFront;
+    offer.balance = balance;
+    offer.commission = commissionEur;
+    offer.totalAgent = totalAgent;
+    offer.vatPerc = vatPerc,
+    offer.priceNoExtraBeds = priceNoExtraBeds; // this seems uselss
+    offer.counterAccepted = true; // accept counter offer
+    offer.counterRejected = null; // reject counter offer 
+    offer.rejected = null;
+    return wixData.update("Offers", offer, options)
+      .then( (results) => {
+        console.log(results, 'offer updated');
+        //let updated = results; //see item below
+        sendAcceptCounterOfferEmail(offer);    
+        return 'updated'
+      } )   
+      .catch( (err) => {
+      let errorMsg = err;
+      console.log(err, 'error message');
+      return errorMsg;
+    } );
+    })
+}
+
+async function sendAcceptCounterOfferEmail  (offer) {
+  let {villaName, counterOffer, currency='€', member} = offer;
+  let {title, name} = await wixData.get('MyMembers', member, options);
+  console.log(title, name, villaName, counterOffer, currency='€', member, 'title, name, villaName, counterOffer, currency, member')
+  let villa
+  let dynamicJSON = {
+    name: name,
+    villa: villaName,
+    counterOffer: currency + counterOffer,
+  }
+  dynamicEmail('info@sakamoto.com', title, 'We are glad to inform you that your counter offer was accepted', 'sendAcceptCounterOfferEmail', true, 'counterAccepted', dynamicJSON);
+}
+
+export function rejectCounterOffer  (id) { //propertyToChange 
+  return wixData.get("Offers", id, options)
+  .then( async (item) => {
+    console.log(item, 'offer to be updated');
+    item.counterAccepted = null; // reject counter offer
+    item.counterRejected = true; // accept counter offer
+    item.rejected = true;
+    return wixData.update("Offers", item, options)
+      .then( (updatedOffer) => {
+        console.log(updatedOffer, 'offer updated');
+        sendRejectCounterOfferEmail(updatedOffer);
+        return 'updated';
+      } )   
+      .catch( (err) => {
+      let errorMsg = err;
+      console.log(err, 'error message');
+      return errorMsg;
+  } );
+  })
+}
+
+async function sendRejectCounterOfferEmail  (offer) {
+  let {villaName, counterOffer, currency='€', member} = offer;
+  let {title, name} = await wixData.get('MyMembers', member, options);
+  //console.log(title, name, villaName, counterOffer, currency='€', member, 'title, name, villaName, counterOffer, currency, member')
+  let villa
+  let dynamicJSON = {
+    name: name,
+    villa: villaName,
+    counterOffer: currency + counterOffer,
+  }
+  dynamicEmail('info@sakamoto.com', title, 'We are sorry to inform you that your offer was rejected', 'sendRejectCounterOfferEmail', true, 'rejectedCounterOffer', dynamicJSON);
+}
+
+// remove one offer with specific id
+export function removeOffer (id) { 
+  const agentArray = new Promise( (resolve, reject) => {resolve(searchAgent());});
+  const offer = new Promise( (resolve, reject) => {resolve(getOffer(id));});
+  return Promise.all([agentArray, offer]).then(values => {
+    console.log(values)
+    const [agent, offer] = values;
+    const agentId = agent[0];
+    if(offer.agent === agentId) {
+      return wixData.remove("Offers", id, options).then( (results) => {
+          return 'removed';
+      })
+    }
+    else {return 'notLeadAgent';}
+  })
+  .catch( (err) => {
+    console.log(err, 'error in removing offer');
+    return 'err';
+  });
+}
+
+function getOffer (id) {
+  return wixData.get('Offers', id, options).then( selected => selected)
+  .catch( (err) => {
+      console.log(err, 'error searching offer')
+      return {agent:null, error:err};
+  });
+}
+
+//ALERT KEEP FOR REMOPVING INQUIRY SAVING IN ARCHIVED
+// function removeInquiry (id) {
+//   const agentArray = new Promise( (resolve, reject) => {resolve(searchAgent());});
+//   const inquiry = new Promise( (resolve, reject) => {resolve(getInquiry(id));});
+//   return Promise.all([agentArray, inquiry]).then(values => {
+//     console.log(values)
+//     const [agent, inquiry] = values;
+//     const agentId = agent[0];
+//     if(inquiry.agent === agentId) {
+//       console.log('agent match ok');
+//       return wixData.insert('archivedInquiries', inquiry, options).then( inserted => {
+//         console.log(inserted, 'inserted');
+//         return wixData.remove("Inquiries", id, options).then( inquiryRemoved => {return 'removed';}); 
+//       });
+//     }
+//     else {return 'notLeadAgent';}
+//   })
+//   .catch( (err) => {
+//     console.log(err, 'error in removing offer');
+//     return err;
+//   });
+// }
+
+
+// function getInquiry (id) {
+//   return wixData.get('Inquiries', id, options).then( selected => selected)
+//   .catch( (err) => {
+//       console.log(err, 'error in searching inquiry')
+//       return 'err';
+//   });
+// }
+
+//add 24 hours to expiration
+export async function renewOffer (id) {
+  const offer = await wixData.get('Offers', id, options);
+  let today = new Date();
+  let tomorrow = new Date(today.getTime()+8.64e+7);
+  offer.expirationDate = tomorrow;
+  return wixData.update('Offers', offer, options).then( (updated) => {
+    return 'updated';
+  })
+  .catch( (err) => {
+      let errorMsg = err;
+      console.log(err, 'error message');
+      return errorMsg;
+  } );
+}
+
+async function eraseOffersForOneInquiry (inquiryId)  {
+  const offers = await offerOneLead(inquiryId);
+  console.log(offers.length, ' offers to be removed for this inquiry');
+  let offersRemoveFailed = [];
+  if (offers.length > 0) {
+    let p1 = new Promise( (resolve, reject) => {
+      for (let i = 0; i <= 11; i++) {  
+        removeOffer(offers[i]._id).then ( response => {
+          console.log(response, 'response in removing one offer in forEach')
+          if (response !== 'removed') {
+            console.log('this offer was NOT removed');
+            offersRemoveFailed.push(offers[i]._id);
+          }
+          if (i === (offers.length-1) ) {
+            console.log(offersRemoveFailed, 'array offers not removed');
+            if (offersRemoveFailed.length === 0) {
+              resolve('Offers Removed');
+            } else {
+              resolve('offersRemoveFailed');
+            }
+          }
+        });
+      }
+    });
+    return p1.then( response => response) 
+    .catch((err) => {
+    console.log(err, 'errorMsg');
+    return(err);
+    });  
+  } else {return 'Offers Removed'}
+} 
+
+// remove all the offers related to one inquiry removed
+export async function deleteOffers (inquiryId) {
+  let response = await eraseOffersForOneInquiry(inquiryId);
+  if (response === 'Offers Removed') {
+    return response;
+  } else {
+    return eraseOffersForOneInquiry(inquiryId).then( response2 => {return response2})
+  }
+}
+
+function offerOneLead (inquiryId) {
+  var offersArray = [];
+  return wixData.query("Offers") 
+    .eq("inquiry", inquiryId)
+    .find(options)  
+    .then( (results) => {
+      //console.log(results, results.totalCount, "results, results.totalCount for checkIfOfferAgentForOneLead");
+      var offers = results.items;
+      return offers;
+    })
+}
+
+
+export async function getInquiryData (inquiryId) {
+  return wixData.query("Inquiries")
+  .eq("_id", inquiryId)
+  .include('myMember')
+  .find(options)
+  .then( (results) => {
+    var inquiry = results.items[0];
+  // console.log(inquiry, 'inquiry full data');
+  let inquiryData = {
+    member:inquiry.myMember._id,
+    guestNumber: inquiry.guests,
+    nightsNumber: inquiry.nightsNumber,
+    guestName: inquiry.name,
+    guestLastname: inquiry.lastName,
+    guestEmail: inquiry.myMember.title,
+    leadAgent: inquiry.agent
+  }
+  //console.log(inquiryData, 'array after pushing member and guests');
+  return inquiryData;
+  } )
+}
+
+// step 1 run slotCalculator(villaId, checkInDate, checkOutDate, nightsNumber); to get the kind of booking about slot WE and working and length etc
+// step 2 run for each villa only the getRate(checkInDate, villaId);
+export async function rateAlgo (villaId, checkInDate, slot) {
+  const processingFee = 6//await getProcessing();
+  //console.log(checkInDate, typeof checkInDate, 'checkInDate, typeof checkInDate')
+  if (typeof checkInDate === 'string') {
+        checkInDate = new Date(Date.parse(checkInDate));
+      }
+  const rate = await getRate(checkInDate, villaId);
+  //console.log(slot, rate, processingFee, "slot, rate, processingFee");
+  const price = await calcRate(slot, rate, processingFee);
+  //console.log(price, 'final price to be returned including cleaning');
+  return price;
+}
+
+// select rate === check-out for first half of the year or rate for check-in in the second half (to get alway higher rate of the slot)
+function getRate (checkInDate, villaId) {
+  // console.log('checkin anf then typeof', checkInDate, typeof checkInDate);
+  return wixData.query("Villas")
+    .eq("_id", villaId)
+    .find(options)
+    .then( (results) => {
+      // console.log(results, 'villa found');
+      if(results.items[0].rate) {
+        let rate = results.items[0].rate;
+        //console.log(rate, 'rate', checkInDate, Date(Date.parse(rate[3].start)), new Date(Date.parse(rate[3].end)), 'checkin and start then end of rate[3]');
+        // the date comes as string so we turn it back to date
+        let indexBase = rate.findIndex(x => x.isBaseRate  === true);
+        //HERE ALERT
+        // if(checkInDate.getMonth < 6) { /*add the case check out when you have time to add the check out arguments wherever is called}
+        // else {let indexRate = rate.findIndex(x => (new Date(Date.parse(x.start)) <= checkInDate.setHours(23) &&  new Date(Date.parse(x.end))  >= checkInDate.setHours(1)));}
+        let indexRate = rate.findIndex(x => (new Date(Date.parse(x.start)) <= checkInDate.setHours(23) &&  new Date(Date.parse(x.end))  >= checkInDate.setHours(1)));
+        if(indexRate !== -1) {var rateObj = rate[indexRate];} 
+        else if(indexBase !== -1) {rateObj = rate[indexBase];}
+        else{ rateObj = {/* find same rate year before??*/};}
+        rateObj.cleaningFee = results.items[0].cleningFee
+        return rateObj;
+    }
+    else {return {
+        "workDay": 0,
+        "checkinMust": null,
+        "checkinNot": null,
+        "_id": null,
+        "minStay": 'noRateSet',
+        "weBlock": 0,
+        "week": 0,
+        "rateName": null,
+        "end": null,
+        "start": null
+      }
+    }
+    } )
+    .catch( (error) => {
+      console.log(error, 'error getRate')
+    } );
+}
+
+export async function calcRateOriginal (slot, rate, processingFee) {
+  console.log(slot, rate, processingFee, 'slot, rate, processingFee')
+  let {week, workingDay, weekendBlock, totalNights, nightsNumber, checkinDay, checkout, firstDay} = slot;
+  let {cleaning=0} = rate;
+  let multiWeek = 10000000;
+  const amountWorkDays = workingDay * rate.workDay;
+  const amountWeBlocks = weekendBlock * rate.weBlock;
+  const amountWeek = week * rate.week;
+  var totalRate = amountWeek + amountWeBlocks + amountWorkDays + cleaning;
+  //console.log(totalRate, 'totalRate')
+  if (firstDay !== 6 && totalNights >= 7) {
+    console.log('multiweek');
+    // round to the next week number
+    multiWeek = Math.ceil(totalNights/7) * rate.week;
+  }
+  if (totalRate > multiWeek) {
+      totalRate = multiWeek;
+    }
+  //console.log(totalRate, typeof totalRate, processingFee, typeof processingFee, 'totalRate, typeof totalRate, processingFee, typeof processingFee');
+  const processingFeeEur = totalRate * Number(processingFee) / 100;
+  //console.log(processingFeeEur, 'processingFeeEur and typeof', typeof processingFeeEur)
+  //console.log(slot, rate, rate.workDay, rate.weBlock, cleaning, 'slot, rate, rate[0].workDay, rate[0].weBlock, cleaning');
+  const finalRate = totalRate + processingFeeEur; 
+  //console.log(totalRate, 'totalRate');
+  return Math.round(finalRate);
+}
+
+// workDay: 660
+// checkinMust: null
+// checkinNot: null
+// _id: "1606638052042"
+// minStay: "3"
+// weBlock: 3575
+// week: 4675
+// rateName: "May-June"
+// end: "2021-06-15T16:00:00.000Z"
+// start: "2021-04-28T16:00:00.000Z
+
+// alert missing extra beds variable "": 'noRateSet',
+export async function calcRate (slot, rate, processingFee) {
+  // console.log(slot, rate, processingFee, 'slot, rate, processingFee')
+  let {week, workingDay, weekendBlock, totalNights, nightsNumber, checkinDay, checkout, firstDay} = slot;
+  // console.log('week, workingDay, weekendBlock, totalNights, firstDay', week, workingDay, weekendBlock, totalNights, firstDay)
+  if(rate.minStay !== 'noRateSet') {
+    let {cleaningFee=0} = rate;
+    // console.log(rate, typeof rate.cleaningFee)
+    const amountWorkDays = workingDay * +rate.workDay;
+    const amountWeBlocks = weekendBlock * +rate.weBlock;
+    const amountWeek = week * +rate.week;
+    // console.log('amountOneWeek,  amountWeBlocks, amountWorkDays', +rate.week, amountWeBlocks, amountWorkDays)
+    if(firstDay === 6 && week > 0 && workingDay===0 && weekendBlock===0) {
+      // console.log('case one or more week but with check in on saturday so only first week 130%');
+      var totalRate = (+rate.week*1.3) + ((week-1)* +rate.week) + cleaningFee;
+    }
+    else if ((amountWorkDays + amountWeBlocks) > +rate.week) {
+      // console.log('case that the full week is cheaper than the sum of the parts of slot so we use the week rate in place of working + weekndBlock');
+      totalRate = amountWeek + +rate.week + cleaningFee;
+    } 
+    else { totalRate = amountWeek + amountWeBlocks + amountWorkDays + cleaningFee;}
+    // console.log('case use the sum of the parts to cal rate with no acceptions');
+    const processingFeeEur = totalRate * Number(processingFee) / 100;
+    // console.log(processingFeeEur, 'processingFee')
+    const finalRate = totalRate + processingFeeEur;
+    // console.log(finalRate, 'finalRate');
+    return Math.round(finalRate);
+  } else {return 'On Demand';}
+}
+
+
+// calculate the slot with blocks of weekdays or weekends. 1 weekend Block is 3 nights
+export async function slotCalculator (checkInDate, checkOutDate, nightsNumber) { 
+  // console.log(checkInDate, 'checkinDate to get the start');
+  var firstDay = checkInDate.getDay(); // 0-6 days
+  const array = await setArrayDays(firstDay, nightsNumber);
+  // console.log(array, 'starting array')
+  const nightsCalculated = await calcDays(nightsNumber,  array);
+  //console.log(nightsCalculated, 'nights calculated')
+  // CREATE THE ARRAY WITH ALL THE DATA
+  checkInDate.setHours(16);
+  checkOutDate.setHours(12);
+  checkInDate.setMinutes(0);
+  checkOutDate.setMinutes(0);
+  let data = {
+      week: nightsCalculated.week,
+      workingDay: nightsCalculated.workingDay,
+      weekendBlock: nightsCalculated.weekendBlock,
+      totalNights: nightsNumber,
+      checkinDay: checkInDate,
+      checkout: checkOutDate,
+      firstDay:firstDay,
+  }
+  return data;
+}
+
+function calcDays (nightsNumber, array) {
+  // var weDay = 0;
+  // var workDay = 0;
+  var week = 0;
+  // var minStay = 3; // alert ypu could get value from ratesDB for the season
+  // var weekendBlock = 0;
+  //let's see how many weeks multiple //rounded to lower integer
+  week = Math.floor(nightsNumber / 7); 
+  // let's calc the remainder what days number are 0-6 
+  //console.log(nightsNumber, firstDay, week, 'nightsNumber, firstDay, week');
+  return remainderDay(nightsNumber, week, array).then( objDays => {
+    return objDays;
+  })
+}
+
+function remainderDay (nightsNumber, week, array) {
+  //console.log('fucking array', array);
+  // let remainder = nightsNumber - (week * 7);
+  // console.log(remainder, 'number of remainder days');
+  let weDay=0;
+    let p1 = new Promise( (resolve, reject) => {
+    // let start from the day which is a the first of the remainder
+    let counter =1;
+    array.forEach( (day) => {
+      //console.log(day, 'day in the remaider calc');
+      if (counter > (week*7)) { // we are in day excedding the weeks
+      if (day === 5 || day === 6 || day === 0) { // if (day is Fri = 5, Sat= 6 or Sun=0) => we add 1 more weDay or weekend Day 
+        // console.log('we got one weekend day');
+        weDay++;
+        } 
+    }
+    if (counter === nightsNumber) { // this is one of the remainder
+    // console.log('ending loop with these weekend days counted', weDay);
+    // we have at least 1 weekedn day
+      if (weDay > 0 && weDay <= 3) {
+        var weekendBlock = 1;
+      } 
+      // we have more than 1 weekend in between
+      else if (weDay > 3) {weekendBlock = Math.ceil(weDay/3);}
+      // no weeeknd at all
+      else { weekendBlock = 0}
+      let workingDays = (nightsNumber - (week*7) - (weekendBlock*3));
+      if (workingDays < 0) {
+        workingDays = 0;
+      }
+      resolve({
+          week: week,
+          workingDay: workingDays,
+          weekendBlock: weekendBlock,
+        })
+    }
+    counter++;
+    })
+    
+    });
+    return p1.then(obj => {return obj});
+}
+
+
+async function setArrayDays (firstDay, nightsNumber) {
+  // console.log(firstDay, nightsNumber, 'firstday and nightsNumber to create aray 0-6');
+  var arrayDays = [firstDay];
+  for (var i = 1; i < nightsNumber; i++) { // i = 1 because we have already inserted the first
+  if (firstDay < 6) {
+    firstDay++;
+  } else {
+    firstDay = 0;
+  }
+  arrayDays.push(firstDay);
+}
+//console.log(arrayDays, 'arrayDays');
+return arrayDays;
+}
+
+export function mapOffersJS (offers) {
+  const mappedArray = new Promise( (resolve, reject) => {   
+    var mapped = [];
+    let counter=0;
+    offers.forEach((item, index) => {
+      let {policy='fixed', member} =item;
+      //console.log(member, 'meber');
+      let singleMapped = {
+        "_id": item._id,
+        "title": item.title,
+        "villa": item.villa.title,
+        'villaId': item.villa._id,
+        "pic": item.villa.mainPic,
+        "gallery": item.villa.gallery,
+        "checkIn": item.checkIn,
+        "checkOut": item.checkOut,
+        "expirationDate": item.expirationDate,
+        "expirationHour": item.expirationHour,
+        "bathrooms": item.villa.bathrooms,
+        "bedrooms": item.villa.bedrooms,
+        "guestNumber": item.guestNumber,
+        "nightsNumber": item.nightsNumber, 
+        "city": item.villa.municipio,
+        "score": item.villa.score,
+        "scorePerc": item.villa.scorePerc,
+        "bidCoins": item.bidCoins,
+        "rating": item.villa.scorePerc,
+        "category": item.villa.score,
+        'latitude': item.villa.latitude,
+        'longitude': item.villa.longitude,
+        'damageDeposit': item.villa.damageDeposit,
+        'policy': policy,
+        'agentName': member.name,
+        'agentPic': member.pic,
+        'agentEmail': member.title,
+        'agentPhone': member.mainPhone,
+        "counterRejected":item.counterRejected,
+        "counterAccepted": item.counterAccepted,
+        "counterOffer": item.counterOffer,
+        "rejected": item.rejected,
+        "totalPriceIclProcesssing": item.totalPriceIclProcesssing,
+        "upFront": item.upFront,
+        "balance": item.balance,
+        "balanceDate": item.balanceDate,
+        "specialTerms": item.specialTerms,
+        "upfrontPerc": item.upfrontPerc
+      }
+      mapped.push(singleMapped);
+      counter++;
+      if(counter === offers.length) {
+        console.log(counter, offers.length, 'counter, offers.length')
+        resolve(mapped);
+      }
+    });
+  });
+  return mappedArray.then( mapped => {return mapped});
+}
+
+/*
+  // case weeks with check-in on Saturday so 2 weeknds in 1 week
+  if (firstDay === 6 && ((nightsNumber/7) === parseInt(nightsNumber, 10))) { 
+    console.log('case perfect week with Saturday check-in');
+    week = (nightsNumber/7);
+    workDay = 0;
+    weekendBlock = week * 0.3; // aplying a 30% more of a weekend block with check-in on Saturday
+  } 
+  // case regular week
+  else if (firstDay !== 6 && nightsNumber === 7) { 
+    console.log('case perfect week with NO Saturday check-in');
+    week = (nightsNumber/7);
+    workDay = 0;
+    weekendBlock = 0;
+      //console.log("regular week =", weekendBlock, "and working day =", workDay);
+  }
+  // case no full weeks
+  else {
+    console.log('case NOT a perfect week');
+    countDayKind(array).then( obj => {
+      let {workDayCalc, weDayCalc} = obj;
+      console.log(workDayCalc, weDayCalc, 'workDayCalc, weDayCalc');
+      weekendBlock = Math.ceil(weDayCalc / 3);
+      console.log(weekendBlock, 'weekendBlock');
+      let totWekendDays = weekendBlock * 3;
+      workDay = array.length - totWekendDays;
+      console.log(workDay, 'workDay');
+      week =0;
+    })
+  }
+  */
+  
+
